@@ -14,16 +14,12 @@ Our goal is simple: **no more endless campus parking hunts 🚗💨** — know w
 
 ---
 
-## 🏫 Project Background
+## 🏫 Project Background & Purpose
 
 We are students from **University of Nottingham Malaysia Campus (UNMC)**.  
 This is a fully **open-source prototype project** exploring the feasibility of an integrated, real-time, on-campus parking management system.
 
-The project was officially initiated on **24 November 2025**, and has been submitted under the **EIRP Programme by the UNMC Robotics Society**.
-
----
-
-## 🎯 Project Purpose
+The project was officially initiated on **24 November 2025** and has been submitted under the **EIRP Programme by the UNMC Robotics Society**.
 
 - Provide real-time visibility of available parking spaces across campus  
 - Improve traffic flow during peak hours  
@@ -33,7 +29,7 @@ The project was officially initiated on **24 November 2025**, and has been submi
 
 ---
 
-## 📂 Repository Structure (Suggested)
+## 📂 Repository Structure
 
 | Folder / File | Description |
 |---------------|-------------|
@@ -49,8 +45,8 @@ The project was officially initiated on **24 November 2025**, and has been submi
 
 - Backend: C / Python / PyTorch / OpenCV
 - Frontend: HTML / CSS / JavaScript / PHP
-- Database: 
-- Hardware: ESP32, Cameras, SG90 Servo Motor, Solar Panel, Li-ion Battery
+- Database: tbc
+- Hardware: ESP32, Cameras, SG90 Servo Motor, Solar Panel, Li-ion Battery, led screen
 
 ---
 
