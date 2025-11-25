@@ -4,7 +4,7 @@ https://circuitdigest.com/projects/license-plate-recognition-using-esp32-cam
 
 <img width="850" height="571" alt="image" src="https://github.com/user-attachments/assets/6b580ec5-aca4-48e5-885c-293b940b565f" />
 
-cars we use hotwheels
+cars we use hotwheels<br>
 
 we need a bit of 3d print and pcb design, python coding on AI vision
 need to make 6 parking slot, 2 for staff, 3 for student, 1 for visitor
