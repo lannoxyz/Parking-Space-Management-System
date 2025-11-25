@@ -16,3 +16,11 @@ when exit camera detect numberplate again and open the gate
 
 use phone can see the avaliable parking slots on an online website
 total parking slots, empty slots, cars in campus that are finding/exit a parking slot, actual remaining slots
+
+esp32-s3-n16r8
+coils?? 5parkings
+magnetometer as an example QMC5883L hmc5883l price around rm5 per pcs
+1.54 Inch 1.54" Full Color TFT Display Module HD IPS LCD LED Screen 240x240 SPI Interface ST7789 For Arduino price rm10 per pcs
+2 cameras
+18650 battery 3.7v 2000mAh x2 make sure esp32 last for at least 14 hours (average current 200mA)
+solarpanel 
