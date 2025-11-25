@@ -9,8 +9,8 @@ Our goal is simple: **no more endless campus parking hunts 🚗💨** — know w
 
 - [Lanno](https://github.com/lannoxyz)
 - [Oscar](https://github.com/oscarcgw)
-- [Ryan](https://github.com/)
-- [Shao Fan](https://github.com/)
+- [Ryan](https://github.com/ryan797979)
+- [Shao Fan](https://github.com/YuSF-06)
 
 ---
 
