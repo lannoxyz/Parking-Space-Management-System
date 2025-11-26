@@ -33,20 +33,20 @@ The project was officially initiated on **24 November 2025** and has been submit
 
 | Folder / File | Description |
 |---------------|-------------|
-| `docs/` | Design documents, diagrams, and workflow descriptions |
+| `docs/` | Design documents, diagrams, and drawings |
 | `src/` | Main code implementation |
-| `hardware/` | Sensor integration notes, wiring diagrams, prototypes |
-| `data/` | Sample datasets, logs, simulation data |
+| `data/` | Hardware datasheets, logs, simulation data |
 | `README.md` | The page you are looking at 👀 |
 
 ---
 
-## 🔧 Tech Stack (Proposed)
+## 🔧 Tech Stack
 
-- Backend: C / Python / PyTorch / OpenCV
-- Frontend: HTML / CSS / JavaScript / PHP
+- Backend: C / Python / PHP
+- Frontend: HTML / CSS / JavaScript
+- Vision Frameworks: PyTorch / OpenCV
 - Database: tbc
-- Hardware: ESP32, Cameras, SG90 Servo Motor, Solar Panel, Li-ion Battery, led screen
+- Hardware: ESP32-S3-N16R8 Development Board
 
 ---
 
