@@ -1,5 +1,7 @@
 # Parking Space Management System — Campus Solution
 
+LINK TO THIS [GITHUB REPO](https://github.com/lannoxyz/Parking-Space-Management-System)
+
 This project aims to design an online **Parking Space Visibility System** that enhances the convenience and efficiency for drivers searching for available parking slots around the University of Nottingham Malaysia (UNM) campus.  
 Our goal is simple: **no more endless campus parking hunts 🚗💨** — know where to park *before* you even turn the steering wheel.
 
