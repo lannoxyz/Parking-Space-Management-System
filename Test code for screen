@@ -2,37 +2,31 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// OLED display width and height
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-
-// I2C address (most SSD1314/SSD1306 use 0x3C)
+#define OLED_RESET -1
 #define OLED_ADDR 0x3C
 
-// Create display object (no reset pin on most modules)
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  OLED_RESET
+);
 
 void setup() {
-  // Initialize I2C (ESP8266 default pins)
-  Wire.begin(D2, D1);  // SDA, SCL
+  Wire.begin(26, 27);   // SDA, SCL
 
-  // Initialize display
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("OLED init failed");
-    while (true);
+    while (true); // OLED not found
   }
 
   display.clearDisplay();
-
-  // Text settings
-  display.setTextSize(1);      // Text size (1–2 recommended)
+  display.setTextSize(3);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);     // Top-left corner
-
-  // Display text
-  display.println("Hello, ESP8266!");
-  display.println("SSD1314 OLED");
-  display.println("Text display test");
-
-  display.display();           // Push buffer to screen
+  display.setCursor(0, 0);
+  display.println("fuck YEAHHH");
+  display.display();
 }
+
+void loop() {}
