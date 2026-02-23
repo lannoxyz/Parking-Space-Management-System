@@ -1,3 +1,8 @@
+// the sub esp32 have the list of components connected below:
+// 2 x servo motor
+// 1 oled i2c screen
+// 1 x entrance side camera
+
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "esp_http_server.h"
@@ -11,8 +16,8 @@ const char* password = "wifi password";
 #define LED_PIN 38 
 
 // GPIO CAMERA (OV7670)
-#define PWDN_GPIO_NUM    -1
-#define RESET_GPIO_NUM   -1
+#define PWDN_GPIO_NUM    -1 //ground
+#define RESET_GPIO_NUM   -1 //ground
 #define XCLK_GPIO_NUM    10
 #define SIOD_GPIO_NUM    42
 #define SIOC_GPIO_NUM    41

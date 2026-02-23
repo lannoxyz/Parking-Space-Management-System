@@ -44,11 +44,11 @@ The project was officially initiated on **24 November 2025** and has been submit
 
 ## 🔧 Tech Stack
 
-- Backend: C / Python / PHP
+- Backend: C / C++ / Python
 - Frontend: HTML / CSS / JavaScript
-- Vision Frameworks: PyTorch / OpenCV
-- Database: tbc
-- Hardware: ESP32-S3-N16R8 Development Board
+- Vision Frameworks: YOLO on OpenCV
+- Database:
+- Hardware: ESP32 series Development Board
 
 ---
 
