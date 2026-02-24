@@ -13,7 +13,7 @@ const char* ssid = "wifi";
 const char* password = "wifi password";
 
 // LED
-#define LED_PIN 38 
+#define LED_PIN 38 //built in led
 
 // GPIO CAMERA (OV7670)
 #define PWDN_GPIO_NUM    -1 //ground
@@ -32,6 +32,9 @@ const char* password = "wifi password";
 #define VSYNC_GPIO_NUM   12
 #define HREF_GPIO_NUM    13
 #define PCLK_GPIO_NUM    11
+
+#define 
+
 
 httpd_handle_t camera_httpd = NULL;
 
