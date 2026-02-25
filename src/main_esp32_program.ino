@@ -33,8 +33,6 @@ const char* password = "wifi password";
 #define HREF_GPIO_NUM    13
 #define PCLK_GPIO_NUM    11
 
-#define 
-
 
 httpd_handle_t camera_httpd = NULL;
 
