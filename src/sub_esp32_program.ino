@@ -2,4 +2,4 @@
 // 5 x car detection coils
 // 1 x exit side camera
 
-//copy and follow the same pin connection in the main esp32
+//copy and follow the same pin connection in the main esp32.
