@@ -26,21 +26,22 @@ const char* password = "0126550009";  // 你的 WiFi 密码
 // ==========================================
 #define PWDN_GPIO_NUM    -1
 #define RESET_GPIO_NUM   -1
-#define XCLK_GPIO_NUM    10
-#define SIOD_GPIO_NUM    42
-#define SIOC_GPIO_NUM    41
+#define SIOD_GPIO_NUM    21   // SDA
+#define SIOC_GPIO_NUM    22   // SCL
 
-#define Y9_GPIO_NUM      18
-#define Y8_GPIO_NUM      17
-#define Y7_GPIO_NUM      16
-#define Y6_GPIO_NUM      15
-#define Y5_GPIO_NUM      7
-#define Y4_GPIO_NUM      6
-#define Y3_GPIO_NUM      5
-#define Y2_GPIO_NUM      4
-#define VSYNC_GPIO_NUM   12
-#define HREF_GPIO_NUM    13
-#define PCLK_GPIO_NUM    11
+#define XCLK_GPIO_NUM    25
+#define PCLK_GPIO_NUM    26
+#define VSYNC_GPIO_NUM   27
+#define HREF_GPIO_NUM    14
+
+#define Y2_GPIO_NUM      32   // D0
+#define Y3_GPIO_NUM      33   // D1
+#define Y4_GPIO_NUM      34   // D2
+#define Y5_GPIO_NUM      35   // D3
+#define Y6_GPIO_NUM      16   // D4
+#define Y7_GPIO_NUM      17   // D5
+#define Y8_GPIO_NUM      5    // D6
+#define Y9_GPIO_NUM      4    // D7
 
 // ==========================================
 // 🎥 3. 视频流服务器逻辑
@@ -97,6 +98,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res != ESP_OK) {
       break;
     }
+    delay(1);
   }
   return res;
 }
@@ -143,9 +145,9 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 10000000;       
   config.pixel_format = PIXFORMAT_GRAYSCALE; // 改成灰度模式 (黑白)
-  config.frame_size = FRAMESIZE_QVGA;   
+  config.frame_size = FRAMESIZE_QQVGA; // 160x120
   config.jpeg_quality = 12;             
-  config.fb_count = 2;
+  config.fb_count = 1;
 
   // 初始化摄像头
   esp_err_t err = esp_camera_init(&config);
