@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNM Smart Parking Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>🚦 UNM Smart Parking Hub</h1>
+        <p class="subtitle">Edge-AI Monitoring System</p>
+    </header>
+
+    <main class="dashboard">
+        <section class="panel camera-panel">
+            <h2>📷 Live Surveillance</h2>
+            <div class="camera-grid">
+                <div class="camera-feed">
+                    <h3>Entrance Camera (AI)</h3>
+                    <img id="cam_entrance" src="/video" alt="Entrance Feed Offline">
+                </div>
+                <div class="camera-feed">
+                    <h3>Exit Camera</h3>
+                    <img id="cam_exit" src="/placeholder.jpg" alt="Exit Feed Offline (Pending Setup)">
+                </div>
+            </div>
+        </section>
+
+        <section class="panel parking-panel">
+            <h2>🅿️ Slot Status</h2>
+            <div class="slot-grid">
+                <div class="slot" id="slot_0"><span class="slot-name">Slot 1</span><span class="status-badge">Vacant</span></div>
+                <div class="slot" id="slot_1"><span class="slot-name">Slot 2</span><span class="status-badge">Vacant</span></div>
+                <div class="slot" id="slot_2"><span class="slot-name">Slot 3</span><span class="status-badge">Vacant</span></div>
+                <div class="slot" id="slot_3"><span class="slot-name">Slot 4</span><span class="status-badge">Vacant</span></div>
+            </div>
+        </section>
+
+        <section class="panel servo-panel">
+            <h2>🚧 Gate Control</h2>
+            <div class="gate-grid">
+                <div class="gate">
+                    <span class="gate-name">Entrance Gate</span>
+                    <div class="gate-indicator" id="gate_entrance">Closed</div>
+                </div>
+                <div class="gate">
+                    <span class="gate-name">Exit Gate</span>
+                    <div class="gate-indicator" id="gate_exit">Closed</div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
