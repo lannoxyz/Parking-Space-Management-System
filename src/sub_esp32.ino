@@ -2,25 +2,12 @@
 #include <WiFi.h>
 #include "esp_http_server.h"
 #include "img_converters.h"
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 
 // ==========================================
 // WiFi
 // ==========================================
 const char* wifi_ssid     = "Shao Fan's S23 Ultra";
 const char* wifi_password = "my9nd3k3zn4d9rz";
-
-// ==========================================
-// OLED
-// ==========================================
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define OLED_ADDR 0x3C
-#define OLED_SDA_PIN 1  
-#define OLED_SCL_PIN 2
 
 // ==========================================
 // Camera Pins (WROOM Dev Module)
@@ -40,49 +27,15 @@ const char* wifi_password = "my9nd3k3zn4d9rz";
 #define CAM_PIN_D6     18
 #define CAM_PIN_D7     13
 
-#define LED_PIN 2  // 内置 LED，用于状态指示
-
 // ==========================================
 // Globals
 // ==========================================
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 httpd_handle_t camera_http_server = NULL;
-bool is_oled_ready = false;
 bool is_camera_ready = false;
-
-// ==========================================
-// OLED Update
-// ==========================================
-void update_oled(String text) {
-    if (!is_oled_ready) return;
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("UNM Parking");
-    display.setTextSize(1);
-    display.setCursor(0, 30);
-    display.println(text);
-    display.display();
-}
 
 // ==========================================
 // HTTP Handlers
 // ==========================================
-static esp_err_t index_handler(httpd_req_t *req) {
-    const char* html =
-    "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
-    "<style>body{font-family:sans-serif; text-align:center; padding:20px;} "
-    "button{width:100%; height:60px; font-size:24px; margin:10px 0; border-radius:10px; border:none;} "
-    ".btn-cam{background:#3498db; color:white;}</style>"
-    "</head><body>"
-    "<h1>📷 Exit Camera</h1>"
-    "<p><a href='/capture'><button class='btn-cam'>📸 Take Photo</button></a></p>"
-    "</body></html>";
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-}
-
 static esp_err_t capture_handler(httpd_req_t *req) {
     if (!is_camera_ready) {
         httpd_resp_send_500(req);
@@ -112,6 +65,17 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t index_handler(httpd_req_t *req) {
+    const char* html =
+    "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>Exit Camera</title></head><body style='text-align:center; padding:20px;'>"
+    "<h1>📷 Exit Camera</h1>"
+    "<p><a href='/capture'>Take Photo</a></p>"
+    "</body></html>";
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 // ==========================================
 // Start HTTP Server
 // ==========================================
@@ -134,19 +98,6 @@ void startCameraServer() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-
-    // OLED
-    Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
-    Wire.setClock(100000);
-    if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        is_oled_ready = false;
-    } else {
-        is_oled_ready = true;
-        display.clearDisplay();
-        display.display();
-        delay(100);
-        update_oled("Booting...");
-    }
 
     // Camera Init
     camera_config_t config;
@@ -176,28 +127,23 @@ void setup() {
 
     if (esp_camera_init(&config) != ESP_OK) {
         is_camera_ready = false;
-        update_oled("Cam Error");
+        Serial.println("Camera Init Failed!");
     } else {
         is_camera_ready = true;
+        Serial.println("Camera Ready!");
     }
-
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
 
     // WiFi
     WiFi.begin(wifi_ssid, wifi_password);
-    int retry = 0;
-    while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    Serial.print("Connecting to WiFi");
+    while (WiFi.status() != WL_CONNECTED) {
         delay(500);
-        retry++;
+        Serial.print(".");
     }
+    Serial.println("\nWiFi Connected. IP: " + WiFi.localIP().toString());
 
-    if(WiFi.status() == WL_CONNECTED) {
-        update_oled("IP: " + WiFi.localIP().toString());
-        startCameraServer();
-    } else {
-        update_oled("WiFi Fail");
-    }
+    // Start server
+    startCameraServer();
 }
 
 // ==========================================
