@@ -9,7 +9,7 @@ from flask import Flask, Response, jsonify
 # ESP32 Camera Endpoints
 # ======================================
 CAM1_URL = "http://10.143.39.206/capture"   # Entrance (AI)
-CAM2_URL = "http://10.143.39.207/capture"   # Exit
+CAM2_URL = "http://10.143.39.6/capture"   # Exit
 
 # ======================================
 # Shared Frame Buffers
