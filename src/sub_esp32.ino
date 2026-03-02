@@ -3,11 +3,8 @@
 #include "esp_http_server.h"
 #include "img_converters.h"
 
-// ==========================================
-// WiFi
-// ==========================================
-const char* wifi_ssid     = "Shao Fan's S23 Ultra";
-const char* wifi_password = "my9nd3k3zn4d9rz";
+// FIX: credentials moved to secrets.h (add secrets.h to .gitignore)
+#include "secrets.h"
 
 // ==========================================
 // Camera Pins (WROOM Dev Module)
@@ -22,8 +19,8 @@ const char* wifi_password = "my9nd3k3zn4d9rz";
 #define CAM_PIN_D1     33
 #define CAM_PIN_D2     16
 #define CAM_PIN_D3     17
-#define CAM_PIN_D4     5
-#define CAM_PIN_D5     4
+#define CAM_PIN_D4      5
+#define CAM_PIN_D5      4
 #define CAM_PIN_D6     18
 #define CAM_PIN_D7     13
 
@@ -42,14 +39,14 @@ static esp_err_t capture_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    camera_fb_t * fb = esp_camera_fb_get();
+    camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
-    uint8_t * jpg_buf = NULL;
-    size_t jpg_len = 0;
+    uint8_t* jpg_buf = NULL;
+    size_t   jpg_len = 0;
 
     bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, fb->format, 40, &jpg_buf, &jpg_len);
     esp_camera_fb_return(fb);
@@ -83,8 +80,8 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
 
-    httpd_uri_t index_uri   = { .uri="/",       .method=HTTP_GET, .handler=index_handler };
-    httpd_uri_t capture_uri = { .uri="/capture",.method=HTTP_GET, .handler=capture_handler };
+    httpd_uri_t index_uri   = { .uri = "/",        .method = HTTP_GET, .handler = index_handler };
+    httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler };
 
     if (httpd_start(&camera_http_server, &config) == ESP_OK) {
         httpd_register_uri_handler(camera_http_server, &index_uri);
@@ -103,14 +100,14 @@ void setup() {
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer   = LEDC_TIMER_0;
-    config.pin_d0 = CAM_PIN_D0;
-    config.pin_d1 = CAM_PIN_D1;
-    config.pin_d2 = CAM_PIN_D2;
-    config.pin_d3 = CAM_PIN_D3;
-    config.pin_d4 = CAM_PIN_D4;
-    config.pin_d5 = CAM_PIN_D5;
-    config.pin_d6 = CAM_PIN_D6;
-    config.pin_d7 = CAM_PIN_D7;
+    config.pin_d0       = CAM_PIN_D0;
+    config.pin_d1       = CAM_PIN_D1;
+    config.pin_d2       = CAM_PIN_D2;
+    config.pin_d3       = CAM_PIN_D3;
+    config.pin_d4       = CAM_PIN_D4;
+    config.pin_d5       = CAM_PIN_D5;
+    config.pin_d6       = CAM_PIN_D6;
+    config.pin_d7       = CAM_PIN_D7;
     config.pin_xclk     = CAM_PIN_XCLK;
     config.pin_pclk     = CAM_PIN_PCLK;
     config.pin_vsync    = CAM_PIN_VSYNC;
@@ -133,22 +130,29 @@ void setup() {
         Serial.println("Camera Ready!");
     }
 
-    // WiFi
-    WiFi.begin(wifi_ssid, wifi_password);
+    // FIX: added retry limit — original looped forever with no timeout
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.print("Connecting to WiFi");
-    while (WiFi.status() != WL_CONNECTED) {
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED && retry < 20) {
         delay(500);
         Serial.print(".");
+        retry++;
     }
-    Serial.println("\nWiFi Connected. IP: " + WiFi.localIP().toString());
 
-    // Start server
-    startCameraServer();
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+        startCameraServer();
+    } else {
+        Serial.println("\nWiFi Failed after 20 retries. Restarting...");
+        delay(3000);
+        ESP.restart(); // Auto-restart so it tries again rather than hanging
+    }
 }
 
 // ==========================================
 // Loop
 // ==========================================
 void loop() {
-    delay(20); // 空循环即可
+    delay(20);
 }

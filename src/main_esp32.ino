@@ -9,11 +9,8 @@
 #include "soc/rtc_cntl_reg.h"
 #include <esp_arduino_version.h>
 
-// ==========================================
-// WiFi
-// ==========================================
-const char* wifi_ssid     = "Shao Fan's S23 Ultra";
-const char* wifi_password = "my9nd3k3zn4d9rz";
+// FIX: credentials moved to secrets.h (add secrets.h to .gitignore)
+#include "secrets.h"
 
 // ==========================================
 // OLED
@@ -22,7 +19,7 @@ const char* wifi_password = "my9nd3k3zn4d9rz";
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 #define OLED_ADDR 0x3C
-#define OLED_SDA_PIN 1  
+#define OLED_SDA_PIN 1
 #define OLED_SCL_PIN 2
 
 // ==========================================
@@ -48,10 +45,10 @@ const int duty_gate_open  = 4915;
 #define Y8_GPIO_NUM      17
 #define Y7_GPIO_NUM      16
 #define Y6_GPIO_NUM      15
-#define Y5_GPIO_NUM      7
-#define Y4_GPIO_NUM      6
-#define Y3_GPIO_NUM      5
-#define Y2_GPIO_NUM      4
+#define Y5_GPIO_NUM       7
+#define Y4_GPIO_NUM       6
+#define Y3_GPIO_NUM       5
+#define Y2_GPIO_NUM       4
 #define VSYNC_GPIO_NUM   12
 #define HREF_GPIO_NUM    13
 #define PCLK_GPIO_NUM    11
@@ -81,8 +78,8 @@ void myservo_write(int pin, int duty) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(pin, duty);
 #else
-    if(pin == servo_entrance_pin) ledcWrite(2, duty);
-    if(pin == servo_exit_pin)     ledcWrite(3, duty);
+    if (pin == servo_entrance_pin) ledcWrite(2, duty);
+    if (pin == servo_exit_pin)     ledcWrite(3, duty);
 #endif
 }
 
@@ -130,16 +127,16 @@ static esp_err_t capture_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    camera_fb_t * fb = esp_camera_fb_get();
+    camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
-    uint8_t * jpg_buf = NULL;
-    size_t jpg_len = 0;
+    uint8_t* jpg_buf = NULL;
+    size_t   jpg_len = 0;
 
-    // OV7670 → 必须软件 JPEG 转码
+    // OV7670 → software JPEG encode required
     bool ok = fmt2jpg(
         fb->buf, fb->len, fb->width, fb->height,
         fb->format, 40, &jpg_buf, &jpg_len
@@ -154,7 +151,6 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_send(req, (const char*)jpg_buf, jpg_len);
-
     free(jpg_buf);
     return ESP_OK;
 }
@@ -193,9 +189,9 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
 
-    httpd_uri_t index_uri   = { .uri="/",       .method=HTTP_GET, .handler=index_handler };
-    httpd_uri_t capture_uri = { .uri="/capture",.method=HTTP_GET, .handler=capture_handler };
-    httpd_uri_t action_uri  = { .uri="/action", .method=HTTP_GET, .handler=action_handler };
+    httpd_uri_t index_uri   = { .uri = "/",        .method = HTTP_GET, .handler = index_handler };
+    httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler };
+    httpd_uri_t action_uri  = { .uri = "/action",  .method = HTTP_GET, .handler = action_handler };
 
     if (httpd_start(&camera_http_server, &config) == ESP_OK) {
         httpd_register_uri_handler(camera_http_server, &index_uri);
@@ -217,7 +213,7 @@ void setup() {
     Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
     Wire.setClock(100000);
 
-    if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
         is_oled_ready = false;
     } else {
         is_oled_ready = true;
@@ -231,14 +227,14 @@ void setup() {
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer   = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM;
-    config.pin_d1 = Y3_GPIO_NUM;
-    config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM;
-    config.pin_d4 = Y6_GPIO_NUM;
-    config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM;
-    config.pin_d7 = Y9_GPIO_NUM;
+    config.pin_d0       = Y2_GPIO_NUM;
+    config.pin_d1       = Y3_GPIO_NUM;
+    config.pin_d2       = Y4_GPIO_NUM;
+    config.pin_d3       = Y5_GPIO_NUM;
+    config.pin_d4       = Y6_GPIO_NUM;
+    config.pin_d5       = Y7_GPIO_NUM;
+    config.pin_d6       = Y8_GPIO_NUM;
+    config.pin_d7       = Y9_GPIO_NUM;
     config.pin_xclk     = XCLK_GPIO_NUM;
     config.pin_pclk     = PCLK_GPIO_NUM;
     config.pin_vsync    = VSYNC_GPIO_NUM;
@@ -256,15 +252,17 @@ void setup() {
     if (esp_camera_init(&config) != ESP_OK) {
         is_camera_ready = false;
         update_oled("Cam Error");
+        Serial.println("Camera Init Failed!");
     } else {
         is_camera_ready = true;
+        Serial.println("Camera Ready!");
     }
 
     // LED off
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
-    // Servo
+    // Servo init
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcAttach(servo_entrance_pin, servo_freq, servo_res);
     ledcAttach(servo_exit_pin,     servo_freq, servo_res);
@@ -272,23 +270,27 @@ void setup() {
     ledcSetup(2, servo_freq, servo_res);
     ledcSetup(3, servo_freq, servo_res);
     ledcAttachPin(servo_entrance_pin, 2);
-    ledcAttachPin(servo_exit_pin, 3);
+    ledcAttachPin(servo_exit_pin,     3);
 #endif
     myservo_write(servo_entrance_pin, duty_gate_close);
     myservo_write(servo_exit_pin,     duty_gate_close);
 
     // WiFi
-    WiFi.begin(wifi_ssid, wifi_password);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi");
     int retry = 0;
     while (WiFi.status() != WL_CONNECTED && retry < 20) {
         delay(500);
+        Serial.print(".");
         retry++;
     }
 
-    if(WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
         update_oled("IP: " + WiFi.localIP().toString());
         startCameraServer();
     } else {
+        Serial.println("\nWiFi Failed after 20 retries.");
         update_oled("WiFi Fail");
     }
 }

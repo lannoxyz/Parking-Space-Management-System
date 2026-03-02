@@ -19,14 +19,19 @@ async function fetchSystemStatus() {
 }
 
 function updateDashboard(data) {
-    // 1. Update Parking Slots (Assuming JSON returns array: [False, True, ...])
+    // 1. Update Parking Slots (JSON returns array: [False, True, ...])
     // True = Occupied, False = Vacant
     for (let i = 0; i < 4; i++) {
         const slotElement = document.getElementById(`slot_${i}`);
+
+        // FIX: null-check before accessing child elements
+        if (!slotElement) continue;
+
         const badgeElement = slotElement.querySelector('.status-badge');
-        
-        const isOccupied = data.parking[i]; 
-        
+        if (!badgeElement) continue;
+
+        const isOccupied = data.parking[i];
+
         if (isOccupied) {
             slotElement.className = 'slot occupied';
             badgeElement.innerText = 'Occupied';
@@ -36,17 +41,19 @@ function updateDashboard(data) {
         }
     }
 
-    // 2. Update Gates/Servos (Assuming JSON returns array: ["Closed", "Open"])
+    // 2. Update Gates/Servos (JSON returns array: ["Closed", "Open"])
     const entranceGate = document.getElementById('gate_entrance');
-    const exitGate = document.getElementById('gate_exit');
+    const exitGate     = document.getElementById('gate_exit');
 
     // Update Entrance
-    entranceGate.innerText = data.servo[0];
-    entranceGate.className = `gate-indicator ${data.servo[0].toLowerCase()}`;
+    const entranceState = data.servo[0] || "Closed";
+    entranceGate.innerText  = entranceState;
+    entranceGate.className  = `gate-indicator ${entranceState.toLowerCase()}`;
 
-    // Update Exit
-    entranceGate.innerText = data.servo[1] || "Closed";
-    exitGate.className = `gate-indicator ${(data.servo[1] || "Closed").toLowerCase()}`;
+    // FIX: was writing to entranceGate instead of exitGate
+    const exitState = data.servo[1] || "Closed";
+    exitGate.innerText = exitState;
+    exitGate.className = `gate-indicator ${exitState.toLowerCase()}`;
 }
 
 // Start the polling loop when the page loads
