@@ -1,15 +1,26 @@
 /*
  * main_esp32_cam1.ino  –  Entrance Camera + Gate Controller (ESP32-S3)
  * =====================================================================
- * BUG FIXES vs previous version:
- *   1. XCLK: ledcSetup was using 8-bit resolution → max achievable freq
- *      = 80MHz ÷ 256 = 312kHz.  OV7670 minimum XCLK = 10MHz → camera
- *      completely dead → VSYNC never came → every captureFrame() timed
- *      out → "no image".
- *      FIX: use 1-bit resolution → max = 80MHz ÷ 2 = 40MHz → 20MHz OK.
+ * BUG FIXES applied in this version:
  *
- *   2. captureFrame(): PCLK polling simplified to 1-byte-per-edge;
- *      HREF boundary guard added to prevent stale byte at line end.
+ *  FIX 1 — SCCB PID=0xFF (camera not responding)
+ *    Root cause: SDA/SCL lines floating — no pull-up resistors.
+ *    OV7670 SCCB requires lines pulled HIGH. External 4.7kΩ to 3.3V
+ *    is ideal; this code enables the internal ~45kΩ pull-ups as a
+ *    fallback which works reliably at the slow SCCB clock (100kHz).
+ *    Also: Wire.setClock(100000) to match SCCB spec.
+ *    Also: XCLK stabilisation delay increased 100ms → 500ms
+ *          (camera requires ~10ms of stable clock before SCCB works).
+ *
+ *  FIX 2 — Wire vs Wire1 conflict
+ *    display was declared with &Wire but Wire is the camera SCCB bus.
+ *    OLED is on GPIO 1/2 which belongs to Wire1.
+ *    Fix: declare display with &Wire1.
+ *    (This also explains why OLED said "[OK]" — it was accidentally
+ *    responding on the camera bus at 0x3C.)
+ *
+ *  FIX 3 — XCLK 8-bit resolution → 312kHz (previous bug, kept fixed)
+ *    1-bit resolution → achievable 20MHz.
  */
 
 #include <WiFi.h>
@@ -34,8 +45,8 @@ WiFiUDP udpCmd;
 //  Camera Pins  (OV7670 on ESP32-S3)
 // ─────────────────────────────────────────────
 #define XCLK_PIN   10
-#define SIOD_PIN   42    // SDA (SCCB)
-#define SIOC_PIN   41    // SCL (SCCB)
+#define SIOD_PIN   42    // SDA — needs pull-up to 3.3V
+#define SIOC_PIN   41    // SCL — needs pull-up to 3.3V
 #define VSYNC_PIN  12
 #define HREF_PIN   13
 #define PCLK_PIN   11
@@ -50,7 +61,7 @@ WiFiUDP udpCmd;
 #define D9_PIN     18
 
 // ─────────────────────────────────────────────
-//  Frame geometry  (QVGA, YUV422)
+//  Frame geometry (QVGA, YUV422)
 // ─────────────────────────────────────────────
 #define WIDTH        320
 #define HEIGHT       240
@@ -82,10 +93,11 @@ uint32_t lastHeapTime  = 0;
 Servo servoEntrance;
 Servo servoExit;
 
+// FIX 2: OLED is on Wire1 (GPIO 1/2), not Wire (GPIO 41/42 = camera bus)
 #define OLED_SDA   1
 #define OLED_SCL   2
 #define OLED_ADDR  0x3C
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
+Adafruit_SSD1306 display(128, 64, &Wire1, -1);   // ← was &Wire — WRONG
 
 // ─────────────────────────────────────────────
 //  Print helpers
@@ -98,13 +110,11 @@ void printBanner() {
     Serial.println(F("╚═══════════════════════════════════════╝"));
     Serial.println();
 }
-
 void printSection(const char* t) {
     Serial.println(F("─────────────────────────────────────────"));
     Serial.println(t);
     Serial.println(F("─────────────────────────────────────────"));
 }
-
 void printSignalBar(int rssi) {
     const char *q, *b;
     if      (rssi >= -50) { q="Excellent"; b="[████████]"; }
@@ -118,28 +128,19 @@ void printSignalBar(int rssi) {
 }
 
 // ─────────────────────────────────────────────
-//  XCLK — BUG FIX
-//
-//  OLD: ledcSetup(0, 20000000, 8)  →  8-bit resolution
-//       max achievable = APB(80MHz) ÷ 2^8 = 312 kHz  ← NOT 20 MHz!
-//       OV7670 requires 10–48 MHz → camera was completely dead.
-//
-//  NEW: ledcSetup(0, 20000000, 1)  →  1-bit resolution
-//       max achievable = APB(80MHz) ÷ 2^1 = 40 MHz
-//       20 MHz is within range → correct XCLK output.
-//       duty = 1 out of max 2 = 50 % ✓
+//  XCLK  (1-bit LEDC = max 40MHz → 20MHz OK)
 // ─────────────────────────────────────────────
 #define XCLK_CHANNEL  0
 
 void startXCLK() {
-    ledcSetup(XCLK_CHANNEL, 20000000, 1);   // 1-bit res → max 40 MHz, target 20 MHz
+    ledcSetup(XCLK_CHANNEL, 20000000, 1);
     ledcAttachPin(XCLK_PIN, XCLK_CHANNEL);
-    ledcWrite(XCLK_CHANNEL, 1);             // 50 % duty (1 of 2 possible values)
-    Serial.println(F("  [OK] XCLK @ 20 MHz, 50% duty (1-bit LEDC, ch0)"));
+    ledcWrite(XCLK_CHANNEL, 1);   // 50% duty
+    Serial.println(F("  [OK] XCLK @ 20 MHz, 50% duty (1-bit ch0)"));
 }
 
 // ─────────────────────────────────────────────
-//  SCCB helpers
+//  SCCB helpers  (camera I2C on Wire)
 // ─────────────────────────────────────────────
 #define OV7670_ADDR  0x21
 
@@ -148,7 +149,6 @@ bool sccbWrite(uint8_t reg, uint8_t val) {
     Wire.write(reg); Wire.write(val);
     return Wire.endTransmission() == 0;
 }
-
 uint8_t sccbRead(uint8_t reg) {
     Wire.beginTransmission(OV7670_ADDR);
     Wire.write(reg);
@@ -163,8 +163,12 @@ uint8_t sccbRead(uint8_t reg) {
 void initOV7670() {
     printSection("[ OV7670 Init ]");
 
-    if (!sccbWrite(0x12, 0x80)) {   // soft reset
-        Serial.println(F("  [WARN] SCCB soft-reset write failed — check wiring!"));
+    // Soft reset
+    if (!sccbWrite(0x12, 0x80)) {
+        Serial.println(F("  [WARN] SCCB soft-reset failed!"));
+        Serial.println(F("         Check: 4.7k pull-ups on SDA(42) and SCL(41) to 3.3V"));
+        Serial.println(F("         Check: XCLK connected to OV7670 XCLK pin"));
+        Serial.println(F("         Check: OV7670 3.3V supply stable"));
     }
     delay(200);
 
@@ -173,38 +177,39 @@ void initOV7670() {
     uint8_t ver = sccbRead(0x0B);
     Serial.print(F("  PID=0x")); Serial.print(pid, HEX);
     Serial.print(F("  VER=0x")); Serial.print(ver, HEX);
-    if (pid == 0x76) Serial.println(F("  [OK] OV7670 detected"));
-    else             Serial.println(F("  [WARN] unexpected PID — check SDA/SCL wiring"));
+    if (pid == 0x76) {
+        Serial.println(F("  [OK] OV7670 detected"));
+    } else if (pid == 0xFF) {
+        Serial.println(F("  [FAIL] No response — I2C bus floating"));
+        Serial.println(F("         Internal pull-ups enabled. If still failing,"));
+        Serial.println(F("         solder 4.7kΩ resistors: SDA→3.3V, SCL→3.3V"));
+    } else {
+        Serial.print(F("  [WARN] Unexpected PID"));
+    }
 
     // QVGA, YUV422 (YUYV)
-    sccbWrite(0x12, 0x00);  // COM7: YUV, no flip/mirror
-    sccbWrite(0x0C, 0x00);  // COM3
-    sccbWrite(0x3E, 0x00);  // COM14: no PCLK prescale
-    sccbWrite(0x70, 0x3A);  // SCALING_XSC
-    sccbWrite(0x71, 0x35);  // SCALING_YSC
-    sccbWrite(0x72, 0x11);  // SCALING_DCWCTR: H÷2, V÷2 → QVGA from VGA
-    sccbWrite(0x73, 0xF0);  // SCALING_PCLK_DIV
-    sccbWrite(0xA2, 0x02);  // SCALING_PCLK_DELAY
-
-    // Output window
-    sccbWrite(0x15, 0x00);  // COM10: VSYNC positive
-    sccbWrite(0x17, 0x16);  // HSTART
-    sccbWrite(0x18, 0x04);  // HSTOP
-    sccbWrite(0x19, 0x02);  // VSTRT
-    sccbWrite(0x1A, 0x7A);  // VSTOP
-    sccbWrite(0x32, 0x80);  // HREF
-    sccbWrite(0x03, 0x0A);  // VREF
-
-    // Clock
-    sccbWrite(0x11, 0x00);  // CLKRC: pre-scaler ÷1 → 20 MHz internal
-    sccbWrite(0x6B, 0x4A);  // DBLV: PLL×4 = 80 MHz, bypass regulator
-
-    // Auto-gain / AWB / AEC
+    sccbWrite(0x12, 0x00);
+    sccbWrite(0x0C, 0x00);
+    sccbWrite(0x3E, 0x00);
+    sccbWrite(0x70, 0x3A);
+    sccbWrite(0x71, 0x35);
+    sccbWrite(0x72, 0x11);  // H÷2, V÷2 from VGA → QVGA
+    sccbWrite(0x73, 0xF0);
+    sccbWrite(0xA2, 0x02);
+    sccbWrite(0x15, 0x00);
+    sccbWrite(0x17, 0x16);
+    sccbWrite(0x18, 0x04);
+    sccbWrite(0x19, 0x02);
+    sccbWrite(0x1A, 0x7A);
+    sccbWrite(0x32, 0x80);
+    sccbWrite(0x03, 0x0A);
+    sccbWrite(0x11, 0x00);
+    sccbWrite(0x6B, 0x4A);
     sccbWrite(0x13, 0xE7);
     sccbWrite(0x0E, 0x61);
     sccbWrite(0x0F, 0x4B);
     sccbWrite(0x16, 0x02);
-    sccbWrite(0x1E, 0x07);  // MVFP
+    sccbWrite(0x1E, 0x07);
     sccbWrite(0x21, 0x02);
     sccbWrite(0x22, 0x91);
     sccbWrite(0x29, 0x07);
@@ -229,20 +234,15 @@ void initOV7670() {
 }
 
 // ─────────────────────────────────────────────
-//  Fast parallel read via GPIO input register
-//  All data pins 4–18 are in GPIO_IN_REG (GPIO 0-31)
+//  Fast parallel pixel read (GPIO register)
 // ─────────────────────────────────────────────
 inline uint8_t readPixelFast() {
     uint32_t r = REG_READ(GPIO_IN_REG);
     return (uint8_t)(
-        ((r >> D9_PIN) & 1) << 7 |
-        ((r >> D8_PIN) & 1) << 6 |
-        ((r >> D7_PIN) & 1) << 5 |
-        ((r >> D6_PIN) & 1) << 4 |
-        ((r >> D5_PIN) & 1) << 3 |
-        ((r >> D4_PIN) & 1) << 2 |
-        ((r >> D3_PIN) & 1) << 1 |
-        ((r >> D2_PIN) & 1)
+        ((r >> D9_PIN) & 1) << 7 | ((r >> D8_PIN) & 1) << 6 |
+        ((r >> D7_PIN) & 1) << 5 | ((r >> D6_PIN) & 1) << 4 |
+        ((r >> D5_PIN) & 1) << 3 | ((r >> D4_PIN) & 1) << 2 |
+        ((r >> D3_PIN) & 1) << 1 | ((r >> D2_PIN) & 1)
     );
 }
 
@@ -250,18 +250,15 @@ inline uint8_t readPixelFast() {
 //  Capture one frame — returns true on success
 // ─────────────────────────────────────────────
 bool captureFrame() {
-    uint32_t idx = 0;
-    uint32_t t;
+    uint32_t idx = 0, t;
 
-    // Wait VSYNC rising (start of blank)
     t = millis();
     while (!digitalRead(VSYNC_PIN)) {
         if (millis() - t > 500) {
-            Serial.println(F("  [WARN] VSYNC rising timeout — check XCLK wiring"));
+            Serial.println(F("  [WARN] VSYNC rising timeout — XCLK reaching camera?"));
             droppedFrames++; return false;
         }
     }
-    // Wait VSYNC falling (start of active frame)
     t = millis();
     while (digitalRead(VSYNC_PIN)) {
         if (millis() - t > 500) {
@@ -271,18 +268,15 @@ bool captureFrame() {
     }
 
     while (idx < FRAME_BYTES) {
-        // Wait for active line (HREF high)
         t = millis();
         while (!digitalRead(HREF_PIN)) {
-            if (digitalRead(VSYNC_PIN)) return (idx > 0);  // next frame started
+            if (digitalRead(VSYNC_PIN)) return (idx > 0);
             if (millis() - t > 100) { droppedFrames++; return false; }
         }
-
-        // Read pixels on this line — one byte per PCLK rising edge
         while (digitalRead(HREF_PIN) && idx < FRAME_BYTES) {
-            while (!digitalRead(PCLK_PIN));          // wait rising edge
-            frameBuffer[idx++] = readPixelFast();    // latch data
-            while (digitalRead(PCLK_PIN));           // wait falling edge
+            while (!digitalRead(PCLK_PIN));
+            frameBuffer[idx++] = readPixelFast();
+            while (digitalRead(PCLK_PIN));
         }
     }
     return true;
@@ -316,6 +310,9 @@ void sendFrame() {
         }
         offset   += len;
         chunkIdx++;
+
+        // Yield every 8 chunks to prevent WiFi TX buffer saturation
+        if (chunkIdx % 8 == 0) delay(1);
     }
     frameSeq++;
 }
@@ -326,7 +323,6 @@ void sendFrame() {
 void handleCommand() {
     int sz = udpCmd.parsePacket();
     if (!sz) return;
-
     char buf[64] = {0};
     int  n = udpCmd.read(buf, sizeof(buf) - 1);
     buf[n] = '\0';
@@ -334,13 +330,9 @@ void handleCommand() {
     Serial.print(F("  [CMD] ")); Serial.println(cmd);
 
     if (cmd.startsWith("SE1:")) {
-        int a = cmd.substring(4).toInt();
-        servoEntrance.write(a);
-        Serial.print(F("  [SERVO] Entrance -> ")); Serial.println(a);
+        servoEntrance.write(cmd.substring(4).toInt());
     } else if (cmd.startsWith("SE2:")) {
-        int a = cmd.substring(4).toInt();
-        servoExit.write(a);
-        Serial.print(F("  [SERVO] Exit -> ")); Serial.println(a);
+        servoExit.write(cmd.substring(4).toInt());
     } else if (cmd.startsWith("OLED:")) {
         String msg = cmd.substring(5);
         display.clearDisplay();
@@ -357,10 +349,8 @@ void handleCommand() {
 void connectWiFi() {
     printSection("[ WiFi ]");
     Serial.print(F("  SSID     : ")); Serial.println(ssid);
-    Serial.print(F("  Target   : ")); Serial.print(pc_ip);
-    Serial.print(F(":")); Serial.println(pc_port_cam1);
-    Serial.println();
-    Serial.print(F("  Connecting"));
+    Serial.print(F("  Target   : ")); Serial.print(pc_ip); Serial.print(F(":")); Serial.println(pc_port_cam1);
+    Serial.println(); Serial.print(F("  Connecting"));
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
@@ -369,11 +359,7 @@ void connectWiFi() {
     while (WiFi.status() != WL_CONNECTED) {
         delay(500); Serial.print(F("."));
         if (++att % 20 == 0) { Serial.println(); Serial.print(F("  Retrying ")); }
-        if (att > 60) {
-            Serial.println();
-            Serial.println(F("  [ERR] WiFi failed. Restarting..."));
-            delay(3000); ESP.restart();
-        }
+        if (att > 60) { Serial.println(); delay(3000); ESP.restart(); }
     }
     Serial.println();
     Serial.println(F("  [OK] Connected!"));
@@ -388,9 +374,9 @@ void connectWiFi() {
 void setup() {
     Serial.begin(115200);
     delay(1500);
-
     printBanner();
 
+    // ── GPIO ──
     printSection("[ GPIO ]");
     int dataPins[] = {D2_PIN,D3_PIN,D4_PIN,D5_PIN,D6_PIN,D7_PIN,D8_PIN,D9_PIN};
     for (int p : dataPins) pinMode(p, INPUT);
@@ -399,16 +385,28 @@ void setup() {
     pinMode(PCLK_PIN,  INPUT);
     Serial.println(F("  [OK] D2-D9, VSYNC, HREF, PCLK configured"));
 
-    // XCLK must start BEFORE OV7670 I2C init
+    // ── XCLK first — camera needs clock before SCCB ──
     startXCLK();
-    delay(100);   // give camera time to lock onto clock
+    delay(500);   // FIX 1: was 100ms — 500ms ensures clock is stable
+    Serial.println(F("  [OK] XCLK stable delay done"));
 
+    // ── SCCB / OV7670 ──
     printSection("[ OV7670 ]");
+    // FIX 1: Enable internal pull-ups on SDA/SCL before Wire.begin()
+    //        This compensates for missing external 4.7kΩ resistors.
+    //        If SCCB still fails, add physical 4.7kΩ from each pin to 3.3V.
+    pinMode(SIOD_PIN, INPUT_PULLUP);
+    pinMode(SIOC_PIN, INPUT_PULLUP);
     Wire.begin(SIOD_PIN, SIOC_PIN);
+    Wire.setClock(100000);   // 100kHz — SCCB spec maximum
+    Serial.println(F("  [OK] Wire on pins SDA=42, SCL=41 @ 100kHz"));
+    Serial.println(F("  [NOTE] Internal pull-ups active (~45k). Add 4.7k ext if PID=0xFF"));
     initOV7670();
 
+    // ── WiFi ──
     connectWiFi();
 
+    // ── UDP ──
     printSection("[ UDP ]");
     udpSend.begin(5500);
     udpCmd.begin(cmd_port);
@@ -418,12 +416,14 @@ void setup() {
     Serial.print(F("  Chunks/frm : ")); Serial.println(TOTAL_CHUNKS);
     Serial.println();
 
+    // ── Memory ──
     printSection("[ Memory ]");
     Serial.print(F("  Free heap  : ")); Serial.print(ESP.getFreeHeap()); Serial.println(F(" bytes"));
     Serial.println();
 
+    // ── OLED  (FIX 2: Wire1 initialized BEFORE display.begin) ──
     printSection("[ OLED ]");
-    Wire1.begin(OLED_SDA, OLED_SCL);
+    Wire1.begin(OLED_SDA, OLED_SCL);   // pins 1, 2
     if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
         display.clearDisplay();
         display.setTextColor(SSD1306_WHITE);
@@ -432,11 +432,12 @@ void setup() {
         display.println("CAM1 READY");
         display.println(WiFi.localIP().toString());
         display.display();
-        Serial.println(F("  [OK] OLED initialized"));
+        Serial.println(F("  [OK] OLED on Wire1 (pins 1/2) initialized"));
     } else {
-        Serial.println(F("  [WARN] OLED not found at 0x3C"));
+        Serial.println(F("  [WARN] OLED not found at 0x3C on Wire1 (pins 1/2)"));
     }
 
+    // ── Servos ──
     printSection("[ Servos ]");
     servoEntrance.attach(SERVO_ENTRANCE_PIN);
     servoExit.attach(SERVO_EXIT_PIN);
@@ -460,8 +461,7 @@ void setup() {
 void loop() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F("  [WARN] WiFi lost! Reconnecting..."));
-        WiFi.disconnect();
-        connectWiFi();
+        WiFi.disconnect(); connectWiFi();
     }
 
     handleCommand();
@@ -482,14 +482,12 @@ void loop() {
         Serial.print(F("  FPS:"));          Serial.print(fps, 1);
         Serial.print(F("  Dropped:"));      Serial.print(droppedFrames);
         Serial.print(F("  UDP_fail:"));     Serial.println(udpFailCount);
-        lastFpsTime  = now;
-        lastFpsCount = frameCount;
+        lastFpsTime  = now; lastFpsCount = frameCount;
     }
 
     if (now - lastHeapTime >= 30000) {
         Serial.print(F("  [MEM] heap:")); Serial.print(ESP.getFreeHeap());
-        Serial.print(F("B  RSSI:"));     Serial.print(WiFi.RSSI());
-        Serial.println(F("dBm"));
+        Serial.print(F("B  RSSI:"));     Serial.print(WiFi.RSSI()); Serial.println(F("dBm"));
         lastHeapTime = now;
     }
 }
