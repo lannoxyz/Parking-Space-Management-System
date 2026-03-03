@@ -297,7 +297,7 @@ void sendFrame() {
 
         // KEY FIX: give WiFi RTOS task time to process between every chunk
         yield();
-        delay(3);
+        delay(5);
     }
     frameSeq++;
 }
