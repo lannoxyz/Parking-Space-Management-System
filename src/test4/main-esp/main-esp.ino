@@ -64,8 +64,9 @@ uint32_t lastFpsT = 0, lastFpsCnt = 0, lastHeapT = 0;
 #define SERVO_EXIT 47
 Servo servoEnt, servoEx;
 Adafruit_SSD1306 display(128, 64, &Wire1, -1);
-#define OLED_SDA  1
-#define OLED_SCL  2
+#define OLED_SDA   1
+#define OLED_SCL   2
+#define OLED_ADDR  0x3C
 
 // ── Helpers ──────────────────────────────────
 void sec(const char* t){Serial.println(F("────────────────────────────────────────")); Serial.println(t); Serial.println(F("────────────────────────────────────────"));}
