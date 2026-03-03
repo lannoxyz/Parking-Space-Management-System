@@ -142,7 +142,7 @@ void initOV7670() {
 
 // ── Fast pixel read — all S3 data pins < 32 → single GPIO_IN_REG read ──
 // D2=4 D3=5 D4=6 D5=7 D6=15 D7=16 D8=17 D9=18 — all in GPIO_IN_REG
-inline uint8_t IRAM_ATTR pxFast() {
+inline uint8_t pxFast() {
     uint32_t r = REG_READ(GPIO_IN_REG);
     return (uint8_t)(
         ((r>>D9_PIN)&1)<<7 | ((r>>D8_PIN)&1)<<6 |
@@ -158,7 +158,7 @@ inline uint8_t IRAM_ATTR pxFast() {
 #define VSYNC_MASK (1u << VSYNC_PIN)
 
 // ── Capture ──────────────────────────────────
-bool IRAM_ATTR captureFrame() {
+bool captureFrame() {
     uint32_t idx = 0, t;
 
     t = millis();
