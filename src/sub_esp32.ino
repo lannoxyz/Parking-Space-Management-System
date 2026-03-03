@@ -3,8 +3,8 @@
 #include "esp_http_server.h"
 #include "img_converters.h"
 
-// FIX: credentials moved to secrets.h (add secrets.h to .gitignore)
-#include "secrets.h"
+#define WIFI_SSID     "Lanno"
+#define WIFI_PASSWORD "lannoxyz"
 
 // ==========================================
 // Camera Pins (WROOM Dev Module)
