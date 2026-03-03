@@ -24,7 +24,7 @@
 // =============================
 const char* ssid     = "Lanno";
 const char* password = "lannoxyz";
-const char* pc_ip    = "172.20.10.9";
+const char* pc_ip    = "172.20.10.4";
 int         pc_port  = 5002;
 
 WiFiUDP udp;

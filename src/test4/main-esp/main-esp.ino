@@ -32,9 +32,9 @@
 // ─────────────────────────────────────────────
 //  WiFi
 // ─────────────────────────────────────────────
-const char* ssid         = "Lanno";
+const char* ssid         = "Shao Fan's S23 Ultra";
 const char* password     = "lannoxyz";
-const char* pc_ip        = "172.20.10.9";
+const char* pc_ip        = "172.20.10.4";
 const int   pc_port_cam1 = 5001;
 const int   cmd_port     = 6001;
 
