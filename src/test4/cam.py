@@ -1,258 +1,151 @@
 """
-cam.py  –  YUV422 UDP Receiver & MJPEG Streaming Server
-=========================================================
-Receives chunked UDP packets from two ESP32 cameras,
-reassembles full frames, converts YUV422 → BGR,
-and serves live MJPEG streams via Flask on port 5000.
-
-UDP Packet Format (7-byte header, big-endian):
-  [0]   : cam_id        (uint8,  1 = Entrance/CAM1, 2 = Exit/CAM2)
-  [1-2] : frame_seq     (uint16, rolling frame counter)
-  [3-4] : chunk_index   (uint16, 0-based)
-  [5-6] : total_chunks  (uint16, chunks per frame)
-  [7..] : payload bytes
-
-CAM1 resolution : 320x240  YUV422  -> 153,600 bytes/frame -> 110 chunks
-CAM2 resolution : 160x120  YUV422  ->  38,400 bytes/frame ->  28 chunks
+cam.py — YUV422 UDP receiver + MJPEG web server
+CAM1: 320×240  port 5001
+CAM2: 160×120  port 5002
 """
 
-import socket
-import threading
-import struct
-import time
+import socket, threading, struct, time
 import numpy as np
 import cv2
 from flask import Flask, Response
 
-# ──────────────────────────────────────────
-#  Per-Camera Configuration
-#  BUG FIX #3: original code had a single global WIDTH/HEIGHT (320x240)
-#              but CAM2 is QQVGA (160x120).  Wrong buffer size caused
-#              corrupt reassembly and the cv2 reshape crash.
-# ──────────────────────────────────────────
-CAM_CONFIG = {
-    "cam1": {"width": 320, "height": 240},
-    "cam2": {"width": 160, "height": 120},
+# ── Config ────────────────────────────────────────────────────────────────
+CAM_CFG = {
+    "cam1": {"w": 320, "h": 240, "port": 5001},
+    "cam2": {"w": 160, "h": 120, "port": 5002},
 }
+CHUNK   = 1400
+HDR_FMT = ">BHHH"
+HDR_SZ  = struct.calcsize(HDR_FMT)   # 7
+FLASK_PORT = 5000
 
-def frame_bytes(cam_key: str) -> int:
-    c = CAM_CONFIG[cam_key]
-    return c["width"] * c["height"] * 2   # YUV422 = 2 bytes per pixel
+# ── Shared frames ─────────────────────────────────────────────────────────
+lock = threading.Lock()
+latest = {k: np.zeros((v["h"], v["w"], 3), dtype=np.uint8) for k, v in CAM_CFG.items()}
 
-CHUNK_SIZE  = 1400
-HEADER_FMT  = ">BHHH"                          # cam_id(1), seq(2), chunk(2), total(2)
-HEADER_SIZE = struct.calcsize(HEADER_FMT)       # 7 bytes
+# ── YUV decode (try YUYV first, fall back to UYVY if image looks wrong) ──
+def decode(raw: bytes, w: int, h: int) -> np.ndarray:
+    arr = np.frombuffer(raw, np.uint8).reshape((h, w, 2))
+    # YUYV is OV7670 default
+    bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_YUYV)
+    return bgr
 
-RECV_PORT_CAM1 = 5001
-RECV_PORT_CAM2 = 5002
-FLASK_PORT     = 5000
-
-# ──────────────────────────────────────────
-#  Shared Frame Buffers (BGR, one per camera)
-# ──────────────────────────────────────────
-_lock = threading.Lock()
-latest_bgr = {
-    "cam1": np.zeros(
-        (CAM_CONFIG["cam1"]["height"], CAM_CONFIG["cam1"]["width"], 3), dtype=np.uint8
-    ),
-    "cam2": np.zeros(
-        (CAM_CONFIG["cam2"]["height"], CAM_CONFIG["cam2"]["width"], 3), dtype=np.uint8
-    ),
-}
-
-# ──────────────────────────────────────────
-#  YUV422 (YUYV) -> BGR
-#
-#  BUG FIX #2: original reshape was (HEIGHT, WIDTH * 2)
-#              -> shape (240, 640) -> treated as single-channel 2D array
-#              -> cv2.COLOR_YUV2BGR_YUYV requires 2-channel input
-#              -> crash: "Bad number of channels / scn is 1"
-#
-#  Fix: reshape to (HEIGHT, WIDTH, 2) -> shape (240, 320, 2) = 2-channel
-# ──────────────────────────────────────────
-def yuv422_to_bgr(raw_bytes: bytes, width: int, height: int) -> np.ndarray:
-    yuv = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((height, width, 2))  # <- FIX
-    return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_YUYV)
-
-# ──────────────────────────────────────────
-#  UDP Receiver Thread
-# ──────────────────────────────────────────
-def udp_receiver(port: int, cam_key: str) -> None:
-    cfg      = CAM_CONFIG[cam_key]
-    width    = cfg["width"]
-    height   = cfg["height"]
-    total_fb = frame_bytes(cam_key)
-    n_chunks = (total_fb + CHUNK_SIZE - 1) // CHUNK_SIZE
+# ── UDP receiver ──────────────────────────────────────────────────────────
+def receiver(key: str):
+    cfg   = CAM_CFG[key]
+    w, h  = cfg["w"], cfg["h"]
+    port  = cfg["port"]
+    fbytes = w * h * 2
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4*1024*1024)
     sock.bind(("0.0.0.0", port))
     sock.settimeout(5.0)
+    print(f"[{key}] listening port {port}  ({w}×{h}  {fbytes}B/frame)")
 
-    print(f"[{cam_key}] UDP receiver on port {port}  "
-          f"({width}x{height}, {total_fb} B/frame, {n_chunks} chunks/frame)")
+    asm:   dict[int, bytearray] = {}
+    rcvd:  dict[int, set]       = {}
+    ts:    dict[int, float]     = {}
 
-    reassembly:       dict[int, bytearray] = {}
-    received_chunks:  dict[int, set]       = {}
-    frame_timestamps: dict[int, float]     = {}
-
-    frames_ok    = 0
-    frames_stale = 0
-    last_report  = time.time()
+    ok_cnt = stale_cnt = 0
+    t_report = time.time()
 
     while True:
         try:
-            data, _ = sock.recvfrom(CHUNK_SIZE + HEADER_SIZE + 32)
+            data, _ = sock.recvfrom(CHUNK + HDR_SZ + 32)
         except socket.timeout:
             continue
         except Exception as e:
-            print(f"[{cam_key}] Socket error: {e}")
+            print(f"[{key}] socket error: {e}")
             time.sleep(0.1)
             continue
 
-        if len(data) < HEADER_SIZE:
+        if len(data) < HDR_SZ:
             continue
 
-        # ── Parse header ──
-        cam_id, frame_seq, chunk_idx, total = struct.unpack_from(HEADER_FMT, data, 0)
-        payload = data[HEADER_SIZE:]
-
-        if chunk_idx >= total or total == 0:
+        _, seq, idx, total = struct.unpack_from(HDR_FMT, data)
+        payload = data[HDR_SZ:]
+        if total == 0 or idx >= total:
             continue
 
-        # ── Init reassembly buffer for new frame ──
-        if frame_seq not in reassembly:
-            reassembly[frame_seq]       = bytearray(total_fb)
-            received_chunks[frame_seq]  = set()
-            frame_timestamps[frame_seq] = time.time()
+        if seq not in asm:
+            asm[seq]  = bytearray(fbytes)
+            rcvd[seq] = set()
+            ts[seq]   = time.time()
 
-        # ── Write chunk into correct position ──
-        offset = chunk_idx * CHUNK_SIZE
-        end    = min(offset + len(payload), total_fb)
-        reassembly[frame_seq][offset:end] = payload[:end - offset]
-        received_chunks[frame_seq].add(chunk_idx)
+        off = idx * CHUNK
+        end = min(off + len(payload), fbytes)
+        asm[seq][off:end] = payload[:end-off]
+        rcvd[seq].add(idx)
 
-        # ── Frame complete? ──
-        if len(received_chunks[frame_seq]) >= total:
+        if len(rcvd[seq]) >= total:
             try:
-                bgr = yuv422_to_bgr(bytes(reassembly[frame_seq]), width, height)
-                with _lock:
-                    latest_bgr[cam_key] = bgr
-                frames_ok += 1
+                bgr = decode(bytes(asm[seq]), w, h)
+                with lock:
+                    latest[key] = bgr
+                ok_cnt += 1
             except Exception as e:
-                print(f"[{cam_key}] Convert error frame {frame_seq}: {e}")
-            finally:
-                reassembly.pop(frame_seq, None)
-                received_chunks.pop(frame_seq, None)
-                frame_timestamps.pop(frame_seq, None)
+                print(f"[{key}] decode error seq={seq}: {e}")
+            asm.pop(seq, None); rcvd.pop(seq, None); ts.pop(seq, None)
 
-        # ── Purge stale frames (> 0.5 s old) ──
-        stale = [seq for seq, ts in list(frame_timestamps.items())
-                 if time.time() - ts > 0.5]
-        for seq in stale:
-            reassembly.pop(seq, None)
-            received_chunks.pop(seq, None)
-            frame_timestamps.pop(seq, None)
-            frames_stale += 1
+        # purge stale (>0.5s)
+        stale = [s for s, t_ in list(ts.items()) if time.time()-t_ > 0.5]
+        for s in stale:
+            asm.pop(s,None); rcvd.pop(s,None); ts.pop(s,None)
+            stale_cnt += 1
 
-        # ── Stats every 10 s ──
         now = time.time()
-        if now - last_report >= 10.0:
-            print(f"[{cam_key}] decoded={frames_ok}  stale_dropped={frames_stale}  "
-                  f"pending={len(reassembly)}")
-            frames_ok    = 0
-            frames_stale = 0
-            last_report  = now
+        if now - t_report >= 10:
+            print(f"[{key}] decoded={ok_cnt} stale={stale_cnt} pending={len(asm)}")
+            ok_cnt = stale_cnt = 0
+            t_report = now
 
-# ──────────────────────────────────────────
-#  Flask MJPEG Generator
-# ──────────────────────────────────────────
-def mjpeg_generator(cam_key: str):
+# ── MJPEG ────────────────────────────────────────────────────────────────
+def stream(key: str):
     while True:
-        with _lock:
-            frame = latest_bgr[cam_key].copy()
+        with lock:
+            frm = latest[key].copy()
+        ok, jpg = cv2.imencode(".jpg", frm, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            yield b"--f\r\nContent-Type: image/jpeg\r\n\r\n" + jpg.tobytes() + b"\r\n"
+        time.sleep(0.033)
 
-        ret, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if not ret:
-            time.sleep(0.01)
-            continue
-
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" +
-            jpeg.tobytes() +
-            b"\r\n"
-        )
-        time.sleep(0.033)   # ~30 FPS cap
-
-# ──────────────────────────────────────────
-#  Flask App
-# ──────────────────────────────────────────
+# ── Flask ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html>
-<head>
-  <title>ESP32 Camera Feeds</title>
-  <style>
-    body  { background:#111; color:#eee; font-family:monospace; text-align:center; margin:0; padding:20px; }
-    h2    { color:#4af; }
-    p     { color:#888; font-size:13px; margin:4px 0 20px; }
-    .feeds { display:flex; justify-content:center; gap:24px; flex-wrap:wrap; }
-    .cam  { border:1px solid #333; padding:12px; border-radius:6px; background:#1a1a1a; }
-    .cam h3 { margin:0 0 8px; color:#adf; font-size:13px; }
-    img   { display:block; border:1px solid #444; }
-  </style>
-</head>
-<body>
-  <h2>ESP32 Raw Camera Streams &mdash; cam.py</h2>
-  <p>Entrance CAM1 (320&times;240) &nbsp;&nbsp;|&nbsp;&nbsp; Exit CAM2 (160&times;120)</p>
-  <div class="feeds">
-    <div class="cam">
-      <h3>CAM1 &mdash; Entrance</h3>
-      <img src="/cam1" alt="CAM1 offline" width="320" height="240">
-    </div>
-    <div class="cam">
-      <h3>CAM2 &mdash; Exit</h3>
-      <img src="/cam2" alt="CAM2 offline" width="160" height="120">
-    </div>
-  </div>
-</body>
-</html>"""
+HTML = """<!DOCTYPE html><html><head><title>Cameras</title>
+<style>
+body{background:#111;color:#eee;font-family:monospace;text-align:center;padding:20px}
+h2{color:#4af}.wrap{display:flex;justify-content:center;gap:20px;flex-wrap:wrap}
+.box{border:1px solid #333;padding:12px;border-radius:8px;background:#1a1a1a}
+.box h3{margin:0 0 8px;color:#adf;font-size:13px}img{display:block;border:1px solid #444}
+</style></head><body>
+<h2>ESP32 Camera Streams</h2>
+<div class="wrap">
+  <div class="box"><h3>CAM1 — Entrance (320×240)</h3>
+    <img src="/cam1" width="320" height="240" onerror="this.alt='offline'"></div>
+  <div class="box"><h3>CAM2 — Exit (160×120)</h3>
+    <img src="/cam2" width="160" height="120" onerror="this.alt='offline'"></div>
+</div></body></html>"""
 
 @app.route("/")
-def index():
-    return DASHBOARD_HTML
+def index(): return HTML
 
 @app.route("/cam1")
-def stream_cam1():
-    return Response(
-        mjpeg_generator("cam1"),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
+def s1(): return Response(stream("cam1"), mimetype="multipart/x-mixed-replace; boundary=f")
 
 @app.route("/cam2")
-def stream_cam2():
-    return Response(
-        mjpeg_generator("cam2"),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
+def s2(): return Response(stream("cam2"), mimetype="multipart/x-mixed-replace; boundary=f")
 
-# ──────────────────────────────────────────
-#  Entry Point
-# ──────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    threading.Thread(target=udp_receiver, args=(RECV_PORT_CAM1, "cam1"), daemon=True).start()
-    threading.Thread(target=udp_receiver, args=(RECV_PORT_CAM2, "cam2"), daemon=True).start()
+    for k in CAM_CFG:
+        threading.Thread(target=receiver, args=(k,), daemon=True).start()
 
-    print("=" * 58)
-    print("  cam.py  —  ESP32 YUV422 UDP receiver + MJPEG server")
-    print("=" * 58)
-    print(f"  CAM1  port : {RECV_PORT_CAM1}   320x240  153600 B/frame  110 chunks")
-    print(f"  CAM2  port : {RECV_PORT_CAM2}   160x120   38400 B/frame   28 chunks")
-    print(f"  Dashboard  : http://localhost:{FLASK_PORT}/")
-    print(f"  CAM1 feed  : http://localhost:{FLASK_PORT}/cam1")
-    print(f"  CAM2 feed  : http://localhost:{FLASK_PORT}/cam2")
-    print("=" * 58)
-
+    print("="*50)
+    print("  cam.py — UDP receiver + MJPEG server")
+    print(f"  CAM1: port 5001  320×240  110 chunks/frame")
+    print(f"  CAM2: port 5002  160×120   28 chunks/frame")
+    print(f"  Web:  http://localhost:{FLASK_PORT}/")
+    print("="*50)
     app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, threaded=True)
