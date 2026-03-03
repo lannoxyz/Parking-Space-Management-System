@@ -1,18 +1,19 @@
 /*
  * sub_esp32_cam2.ino  –  Exit Camera (plain ESP32)
  * =================================================
- * BUG FIXES in this version:
+ * ROOT CAUSE FIX — UDP 55% packet loss (random chunks):
  *
- *  FIX 1 — UDP TX buffer saturation → chunk 19 always fails
- *    Root cause: sending all 28 chunks back-to-back floods the ESP32
- *    WiFi TX queue (~16KB). Exactly at chunk 19 (~26KB sent) the
- *    queue is full and beginPacket() starts failing.
- *    Fix: delay(2) after every 8 chunks to let the WiFi stack flush.
+ *   CAUSE: Sending all 28 chunks back-to-back saturates the ESP32
+ *   WiFi TX queue. The failure is now RANDOM (not fixed at chunk 19)
+ *   because the queue fills at different points depending on WiFi load.
  *
- *  FIX 2 — Missing OV7670 SCCB init → green snow (kept from prev fix)
- *    Added Wire.begin() + INPUT_PULLUP on SDA/SCL + full register init.
+ *   FIX: yield() + delay(3) between EVERY chunk gives the WiFi RTOS
+ *   task time to dequeue and transmit each packet before the next is
+ *   queued. Also added per-chunk retry (up to 3× with back-off) so
+ *   transient failures recover without silently dropping chunks.
  *
- *  FIX 3 — Wrong QQVGA scaling register 0x72=0x22 (kept from prev fix)
+ *   RESULT: UDP fail count should drop to near zero.
+ *           Green image should resolve once complete frames arrive.
  */
 
 #include <WiFi.h>
@@ -22,9 +23,9 @@
 // =============================
 // WiFi Settings
 // =============================
-const char* ssid     = "Lanno";
-const char* password = "lannoxyz";
-const char* pc_ip    = "172.20.10.4";
+const char* ssid     = "Shao Fan's S23 Ultra";
+const char* password = "my9nd3k3zn4d9rz";
+const char* pc_ip    = "10.143.39.152";   // ← updated from serial log
 int         pc_port  = 5002;
 
 WiFiUDP udp;
@@ -32,8 +33,8 @@ WiFiUDP udp;
 // =============================
 // OV7670 Pins
 // =============================
-#define CAM_PIN_SIOD    26   // SDA
-#define CAM_PIN_SIOC    27   // SCL
+#define CAM_PIN_SIOD    26
+#define CAM_PIN_SIOC    27
 #define CAM_PIN_VSYNC   25
 #define CAM_PIN_HREF    23
 #define CAM_PIN_PCLK    22
@@ -61,8 +62,7 @@ WiFiUDP udp;
 #define CAM_ID      2
 #define CHUNK_SIZE  1400
 #define HEADER_SIZE 7
-
-static const uint16_t TOTAL_CHUNKS = (FRAME_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;  // 28
+static const uint16_t TOTAL_CHUNKS = (FRAME_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
 uint8_t  frameBuffer[FRAME_SIZE];
 uint8_t  pktBuffer[HEADER_SIZE + CHUNK_SIZE];
@@ -107,7 +107,7 @@ void printSignalBar(int rssi) {
 }
 
 // =============================
-// XCLK  (1-bit = max 40MHz → 20MHz OK)
+// XCLK  (1-bit → 20MHz)
 // =============================
 void startXCLK() {
     ledcAttach(CAM_PIN_XCLK, 20000000, 1);
@@ -119,7 +119,6 @@ void startXCLK() {
 // SCCB helpers
 // =============================
 #define OV7670_ADDR  0x21
-
 bool sccbWrite(uint8_t reg, uint8_t val) {
     Wire.beginTransmission(OV7670_ADDR);
     Wire.write(reg); Wire.write(val);
@@ -139,9 +138,15 @@ uint8_t sccbRead(uint8_t reg) {
 void initOV7670() {
     printSection("[ OV7670 Init ]");
 
-    if (!sccbWrite(0x12, 0x80)) {
-        Serial.println(F("  [WARN] SCCB soft-reset failed!"));
-        Serial.println(F("         Check pull-ups on SDA(26) and SCL(27)"));
+    bool resetOk = false;
+    for (int i = 0; i < 5; i++) {
+        if (sccbWrite(0x12, 0x80)) { resetOk = true; break; }
+        Serial.print(F("  [WARN] SCCB attempt ")); Serial.print(i+1); Serial.println(F(" failed, retrying..."));
+        delay(100);
+    }
+    if (!resetOk) {
+        Serial.println(F("  [FAIL] SCCB failed after 5 attempts"));
+        Serial.println(F("         Add 4.7kΩ pull-up: SDA(26)→3.3V, SCL(27)→3.3V"));
     }
     delay(200);
 
@@ -149,17 +154,17 @@ void initOV7670() {
     uint8_t ver = sccbRead(0x0B);
     Serial.print(F("  PID=0x")); Serial.print(pid, HEX);
     Serial.print(F("  VER=0x")); Serial.print(ver, HEX);
-    if (pid == 0x76)      Serial.println(F("  [OK] OV7670 detected"));
+    if      (pid == 0x76) Serial.println(F("  [OK] OV7670 detected"));
     else if (pid == 0xFF) Serial.println(F("  [FAIL] No I2C response — check pull-ups"));
-    else                  Serial.println(F("  [WARN] unexpected PID"));
+    else                  Serial.println(F("  [WARN] Unexpected PID"));
 
-    sccbWrite(0x12, 0x00);  // COM7: YUV mode
+    sccbWrite(0x12, 0x00);
     sccbWrite(0x0C, 0x00);
     sccbWrite(0x3E, 0x00);
     sccbWrite(0x70, 0x3A);
     sccbWrite(0x71, 0x35);
-    sccbWrite(0x72, 0x22);  // DCWCTR: H÷4, V÷4 → QQVGA  ← KEY register
-    sccbWrite(0x73, 0xF1);  // PCLK_DIV: ÷2 for QQVGA
+    sccbWrite(0x72, 0x22);  // H÷4, V÷4 → QQVGA  ← key register
+    sccbWrite(0x73, 0xF1);  // PCLK_DIV ÷2 for QQVGA
     sccbWrite(0xA2, 0x02);
     sccbWrite(0x15, 0x00);
     sccbWrite(0x17, 0x16);
@@ -194,7 +199,6 @@ void initOV7670() {
     sccbWrite(0xB0, 0x84); sccbWrite(0xB1, 0x0C);
     sccbWrite(0xB2, 0x0E); sccbWrite(0xB3, 0x82);
     sccbWrite(0xB8, 0x0A);
-
     Serial.println(F("  [OK] OV7670 QQVGA registers written"));
 }
 
@@ -222,7 +226,7 @@ bool captureFrame() {
     t = millis();
     while (!digitalRead(CAM_PIN_VSYNC)) {
         if (millis() - t > 500) {
-            Serial.println(F("  [WARN] VSYNC rising timeout — XCLK reaching camera?"));
+            Serial.println(F("  [WARN] VSYNC rising timeout"));
             droppedFrames++; return false;
         }
     }
@@ -233,7 +237,6 @@ bool captureFrame() {
             droppedFrames++; return false;
         }
     }
-
     while (idx < FRAME_SIZE) {
         t = millis();
         while (!digitalRead(CAM_PIN_HREF)) {
@@ -250,14 +253,15 @@ bool captureFrame() {
 }
 
 // =============================
-// Send frame as chunked UDP
-// FIX 1: delay(2) every 8 chunks prevents WiFi TX buffer overflow.
-//        Without this, chunk 19 (~26KB into the burst) always failed
-//        because the ESP32 TX queue (~16KB) was completely saturated.
+// Send frame as chunked UDP  ← ROOT CAUSE FIX
+// yield() + delay(3) between EVERY chunk → WiFi task
+// gets time to transmit before next packet is queued.
+// Retry up to 3× with back-off for transient failures.
 // =============================
 void sendFrame() {
     uint16_t chunkIdx = 0;
     uint32_t offset   = 0;
+    uint8_t  retries;
 
     while (offset < FRAME_SIZE) {
         uint16_t len = min((uint32_t)CHUNK_SIZE, (uint32_t)(FRAME_SIZE - offset));
@@ -269,29 +273,31 @@ void sendFrame() {
         pktBuffer[4] =  chunkIdx           & 0xFF;
         pktBuffer[5] = (TOTAL_CHUNKS >> 8) & 0xFF;
         pktBuffer[6] =  TOTAL_CHUNKS       & 0xFF;
-
         memcpy(pktBuffer + HEADER_SIZE, frameBuffer + offset, len);
 
-        if (udp.beginPacket(pc_ip, pc_port)) {
-            udp.write(pktBuffer, HEADER_SIZE + len);
-            if (!udp.endPacket()) {
-                udpFailCount++;
-                if (udpFailCount % 50 == 1) {
-                    Serial.print(F("  [WARN] UDP fail chunk "));
-                    Serial.print(chunkIdx);
-                    Serial.print(F(" (total: ")); Serial.print(udpFailCount);
-                    Serial.println(F(")"));
-                }
+        retries = 0;
+        while (retries < 3) {
+            if (udp.beginPacket(pc_ip, pc_port)) {
+                udp.write(pktBuffer, HEADER_SIZE + len);
+                if (udp.endPacket()) break;   // success
             }
-        } else {
             udpFailCount++;
+            retries++;
+            delay(5);  // back-off before retry
+        }
+        if (retries == 3) {
+            if (udpFailCount % 100 == 1) {
+                Serial.print(F("  [WARN] chunk ")); Serial.print(chunkIdx);
+                Serial.print(F(" failed (total: ")); Serial.print(udpFailCount); Serial.println(F(")"));
+            }
         }
 
         offset   += len;
         chunkIdx++;
 
-        // FIX 1: flush the WiFi TX queue every 8 chunks
-        if (chunkIdx % 8 == 0) delay(2);
+        // KEY FIX: give WiFi RTOS task time to process between every chunk
+        yield();
+        delay(3);
     }
     frameSeq++;
 }
@@ -304,10 +310,8 @@ void connectWiFi() {
     Serial.print(F("  SSID      : ")); Serial.println(ssid);
     Serial.print(F("  Target IP : ")); Serial.print(pc_ip); Serial.print(F(":")); Serial.println(pc_port);
     Serial.println(); Serial.print(F("  Connecting"));
-
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
-
     int att = 0;
     while (WiFi.status() != WL_CONNECTED) {
         delay(500); Serial.print(F("."));
@@ -337,16 +341,14 @@ void setup() {
     Serial.println(F("  [OK] D0-D7, VSYNC, HREF, PCLK configured"));
 
     startXCLK();
-    delay(500);  // wait for camera clock to stabilise before SCCB
+    delay(500);
     Serial.println(F("  [OK] XCLK stable"));
 
-    // Enable pull-ups on SDA/SCL before Wire.begin()
-    // If PID still = 0xFF, add physical 4.7kΩ resistors SDA→3.3V, SCL→3.3V
     pinMode(CAM_PIN_SIOD, INPUT_PULLUP);
     pinMode(CAM_PIN_SIOC, INPUT_PULLUP);
     Wire.begin(CAM_PIN_SIOD, CAM_PIN_SIOC);
     Wire.setClock(100000);
-    Serial.println(F("  [OK] Wire on SDA=26, SCL=27 @ 100kHz (pull-ups on)"));
+    Serial.println(F("  [OK] Wire on SDA=26, SCL=27 @ 100kHz"));
     initOV7670();
 
     connectWiFi();
@@ -355,8 +357,8 @@ void setup() {
     udp.begin(5002);
     Serial.println(F("  [OK] UDP socket opened"));
     Serial.print(F("  Frame  : ")); Serial.print(FRAME_SIZE); Serial.println(F(" bytes (160x120x2)"));
-    Serial.print(F("  Chunks : ")); Serial.print(TOTAL_CHUNKS); Serial.println(F(" x 1400 bytes"));
-    Serial.println(F("  Flush  : every 8 chunks to prevent TX overflow"));
+    Serial.print(F("  Chunks : ")); Serial.print(TOTAL_CHUNKS);
+    Serial.println(F(" x 1400B, 3ms gap + retry x3"));
     Serial.println();
 
     printSection("[ Memory ]");
@@ -402,13 +404,10 @@ void loop() {
         lastFpsTime    = now;
         lastFrameCount = frameCount;
     }
-
     if (now - lastHeapReport >= 30000) {
         Serial.print(F("  [MEM] heap:")); Serial.print(ESP.getFreeHeap());
-        Serial.print(F("B  RSSI:"));     Serial.print(WiFi.RSSI());
-        Serial.println(F("dBm"));
+        Serial.print(F("B  RSSI:"));     Serial.print(WiFi.RSSI()); Serial.println(F("dBm"));
         lastHeapReport = now;
     }
-
     delay(1);
 }
