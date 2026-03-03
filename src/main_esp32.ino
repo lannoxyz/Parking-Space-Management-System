@@ -9,8 +9,8 @@
 #include "soc/rtc_cntl_reg.h"
 #include <esp_arduino_version.h>
 
-// FIX: credentials moved to secrets.h (add secrets.h to .gitignore)
-#include "secrets.h"
+#define WIFI_SSID     "Lanno"
+#define WIFI_PASSWORD "lannoxyz"
 
 // ==========================================
 // OLED
