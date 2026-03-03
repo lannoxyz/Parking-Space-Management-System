@@ -4,10 +4,10 @@
 // =============================
 // WiFi 设置
 // =============================
-const char* ssid     = "Lanno";
-const char* password = "lannoxyz";
+const char* ssid     = "Shao Fan's S23 Ultra";
+const char* password = "my9nd3k3zn4d9rz";
 
-const char* server_ip = "172.20.10.9";   // 你的 PC
+const char* server_ip = "10.143.39.152";   // 你的 PC
 const int   server_port = 5001;          // cam.py 的 CAM1 端口
 
 WiFiUDP udp;
@@ -91,7 +91,6 @@ uint16_t seq = frame_seq++;
 // 分片发送
 for (uint16_t idx = 0; idx < TOTAL_CHUNKS; idx++) {
 
-```
 int offset = idx * CHUNK_SIZE;
 int remaining = FRAME_BYTES - offset;
 int payload_len = remaining > CHUNK_SIZE ? CHUNK_SIZE : remaining;
@@ -109,7 +108,6 @@ udp.beginPacket(server_ip, server_port);
 udp.write(header, 7);
 udp.write(buf + offset, payload_len);
 udp.endPacket();
-```
 
 }
 

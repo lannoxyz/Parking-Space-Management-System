@@ -1,10 +1,10 @@
 #include <WiFi.h>
 #include "esp_camera.h"
 
-const char* ssid     = "Lanno";
-const char* password = "lannoxyz";
+const char* ssid     = "Shao Fan's S23 Ultra";
+const char* password = "my9nd3k3zn4d9rz";
 
-const char* server_ip   = "172.20.10.9";
+const char* server_ip = "10.143.39.152";
 const int   server_port = 5002;
 
 WiFiUDP udp;
@@ -73,7 +73,6 @@ int offset      = idx * CHUNK_SIZE;
 int remaining   = FRAME_BYTES - offset;
 int payload_len = remaining > CHUNK_SIZE ? CHUNK_SIZE : remaining;
 
-```
 uint8_t header[7];
 header[0] = CAM_ID;
 header[1] = (seq >> 8) & 0xFF;
@@ -87,7 +86,6 @@ udp.beginPacket(server_ip, server_port);
 udp.write(header, 7);
 udp.write(buf + offset, payload_len);
 udp.endPacket();
-```
 
 }
 
