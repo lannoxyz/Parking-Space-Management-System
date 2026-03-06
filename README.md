@@ -44,10 +44,9 @@ The project was officially initiated on **24 November 2025** and has been submit
 
 ## 🔧 Tech Stack
 
-- Backend: C / C++ / Python
+- Backend: C / Python
 - Frontend: HTML / CSS / JavaScript
-- Vision Frameworks: YOLO on OpenCV
-- Database:
+- Vision Frameworks: YOLO ONNX
 - Hardware: ESP32 series Development Board
 
 ---
