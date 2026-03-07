@@ -44,10 +44,10 @@ CAM_FPS          = 30
 CAM_FLIP         = -1      # 0=vertical, 1=horizontal, -1=180deg, None=no flip
 CAM_ROTATE       = cv2.ROTATE_90_CLOCKWISE   # or ROTATE_90_COUNTERCLOCKWISE / ROTATE_180 / None
 
-VEHICLE_CLASSES  = [2, 3, 5, 7]   # COCO: car, motorcycle, bus, truck
-YOLO_IMGSZ       = 416
-YOLO_INTERVAL_S  = 0.2   # run YOLO 5× per second
-STREAM_QUALITY   = 60    # JPEG quality for MJPEG stream
+VEHICLE_CLASSES  = [2, 3, 5, 7]   # car, motorcycle, bus, truck
+YOLO_IMGSZ       = 640
+YOLO_INTERVAL_S  = 0.2   # run YOLO 5x per second
+STREAM_QUALITY   = 60    # JPEG quality for stream (lower = faster)
 
 GATE_CONFIRM_S   = 1.0   # vehicle must be present this long before gate opens
 GATE_OPEN_S      = 5.0   # gate stays open this long
