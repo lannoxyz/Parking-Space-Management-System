@@ -45,7 +45,7 @@ CAM_FLIP         = -1    # 0=vertical, 1=horizontal, -1=180deg, None=no flip
 CAM_ROTATE       = cv2.ROTATE_90_CLOCKWISE   # ROTATE_90_CLOCKWISE / ROTATE_90_COUNTERCLOCKWISE / ROTATE_180 / None
 
 VEHICLE_CLASSES  = [2, 3, 5, 7]   # car, motorcycle, bus, truck
-YOLO_IMGSZ       = 416   # sweet spot: better than 320, faster than 640
+YOLO_IMGSZ       = 640
 YOLO_INTERVAL_S  = 0.2   # run YOLO 5x per second
 STREAM_QUALITY   = 60    # JPEG quality for stream (lower = faster)
 
