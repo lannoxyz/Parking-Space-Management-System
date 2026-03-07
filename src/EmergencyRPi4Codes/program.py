@@ -38,19 +38,19 @@ from PIL import ImageFont
 # Configuration
 # =============================================================================
 
-CAM_WIDTH        = 640   # lower res = faster capture + encode
+CAM_WIDTH        = 640
 CAM_HEIGHT       = 480
-CAM_FPS          = 30    # camera runs at full speed
-CAM_FLIP         = -1    # 0=vertical, 1=horizontal, -1=180deg, None=no flip
-CAM_ROTATE       = cv2.ROTATE_90_CLOCKWISE   # ROTATE_90_CLOCKWISE / ROTATE_90_COUNTERCLOCKWISE / ROTATE_180 / None
+CAM_FPS          = 30
+CAM_FLIP         = -1      # 0=vertical, 1=horizontal, -1=180deg, None=no flip
+CAM_ROTATE       = cv2.ROTATE_90_CLOCKWISE   # or ROTATE_90_COUNTERCLOCKWISE / ROTATE_180 / None
 
-VEHICLE_CLASSES  = [2, 3, 5, 7]   # car, motorcycle, bus, truck
-YOLO_IMGSZ       = 416   # sweet spot: better than 320, faster than 640
-YOLO_INTERVAL_S  = 0.2   # run YOLO 5x per second
-STREAM_QUALITY   = 60    # JPEG quality for stream (lower = faster)
+VEHICLE_CLASSES  = [2, 3, 5, 7]   # COCO: car, motorcycle, bus, truck
+YOLO_IMGSZ       = 416
+YOLO_INTERVAL_S  = 0.2   # run YOLO 5× per second
+STREAM_QUALITY   = 60    # JPEG quality for MJPEG stream
 
-GATE_CONFIRM_S   = 1.0
-GATE_OPEN_S      = 5.0
+GATE_CONFIRM_S   = 1.0   # vehicle must be present this long before gate opens
+GATE_OPEN_S      = 5.0   # gate stays open this long
 
 SERVO_GPIO       = 18
 SERVO_OPEN_US    = 1500   # µs — ~90°
@@ -58,9 +58,9 @@ SERVO_CLOSE_US   = 500    # µs — ~0°
 
 PARK_GPIOS       = [17, 27, 22, 23]
 PARK_COUNT       = 4
-FREQ_SAMPLE_S    = 0.5
-FREQ_THRESHOLD   = 100.0
-BASELINE_ALPHA   = 0.15
+FREQ_SAMPLE_S    = 0.5    # how often the sampler thread checks status
+FREQ_THRESHOLD   = 100.0  # Hz delta to trigger occupied/vacant transition
+BASELINE_ALPHA   = 0.15   # slow-drift baseline correction coefficient
 
 OLED_I2C_PORT    = 1
 OLED_I2C_ADDR    = 0x3C
@@ -84,38 +84,55 @@ system_state = {
     "last_seen":  "Never",
 }
 
-# Gate FSM — only touched by camera_grabber thread
+# Gate FSM — only touched by yolo_runner thread
 _gate_state        = "IDLE"   # "IDLE" | "CONFIRMING" | "OPEN"
 _gate_detect_since = None
 _gate_opened_at    = None
 
-# pigpio
+# pigpio instance
 pi = None
 
-# Parking counters — written by pigpio callbacks, read by sampler thread
-_pulse_count   = [0] * PARK_COUNT
+# =============================================================================
+# Parking — period-measurement + EMA (第二版逻辑)
+# =============================================================================
+# Each rising-edge callback computes the instantaneous frequency from the
+# inter-edge period (µs precision via pigpio tick), then blends it into a
+# per-slot exponential moving average.  No counter reset needed.
+
+_last_tick     = [None]  * PARK_COUNT   # last rising-edge tick per slot
 _pulse_lock    = threading.Lock()
-_current_freq  = [0.0]   * PARK_COUNT
-_baseline_freq = [-1.0]  * PARK_COUNT   # -1 = uninitialised
+_current_freq  = [0.0]   * PARK_COUNT  # EMA frequency per slot
+_baseline_freq = [-1.0]  * PARK_COUNT  # -1 = uninitialised
 _slot_occupied = [False]  * PARK_COUNT
 
-# OLED
-oled_dev       = None
-_oled_override = ""
-_oled_until    = 0.0
-
 # =============================================================================
-# pigpio rising-edge callbacks
+# pigpio rising-edge callbacks  (period-measurement edition)
 # =============================================================================
 
 def _make_cb(idx):
     def _cb(gpio, level, tick):
+        global _last_tick, _current_freq
+
+        last = _last_tick[idx]
+        _last_tick[idx] = tick
+
+        if last is None:
+            return
+
+        period = pigpio.tickDiff(last, tick)   # handles 32-bit wrap-around
+        if period <= 0:
+            return
+
+        freq = 1_000_000.0 / period   # µs → Hz
+
         with _pulse_lock:
-            _pulse_count[idx] += 1
+            # Exponential moving average: weight new sample at 20 %
+            _current_freq[idx] = _current_freq[idx] * 0.8 + freq * 0.2
+
     return _cb
 
 # =============================================================================
-# Servo
+# Servo helpers
 # =============================================================================
 
 def servo_set_open():
@@ -123,6 +140,7 @@ def servo_set_open():
         pi.set_servo_pulsewidth(SERVO_GPIO, SERVO_OPEN_US)
     print("[SERVO] Open")
     _oled_flash("WELCOME")
+
 
 def servo_set_close():
     if pi and pi.connected:
@@ -133,10 +151,16 @@ def servo_set_close():
 # OLED
 # =============================================================================
 
+oled_dev       = None
+_oled_override = ""
+_oled_until    = 0.0
+
+
 def _oled_flash(msg: str):
     global _oled_override, _oled_until
     _oled_override = msg
     _oled_until    = time.time() + GATE_OPEN_S + 0.5
+
 
 def _try_font(size: int):
     try:
@@ -144,6 +168,7 @@ def _try_font(size: int):
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", size)
     except Exception:
         return ImageFont.load_default()
+
 
 def oled_loop():
     global oled_dev
@@ -156,7 +181,6 @@ def oled_loop():
         return
 
     f_big = _try_font(18)
-    f_med = _try_font(12)
     f_sm  = _try_font(10)
 
     while True:
@@ -164,12 +188,14 @@ def oled_loop():
             now_t = time.time()
             with canvas(oled_dev) as draw:
                 if now_t < _oled_until and _oled_override:
+                    # Flash message (e.g. "WELCOME") centred on screen
                     msg  = _oled_override
                     bbox = draw.textbbox((0, 0), msg, font=f_big)
                     w    = bbox[2] - bbox[0]
                     draw.text(((OLED_WIDTH - w) // 2, 20), msg,
                               fill="white", font=f_big)
                 else:
+                    # Normal display: time, date, slot status
                     dt       = datetime.now()
                     time_str = dt.strftime("%H:%M:%S")
                     date_str = dt.strftime("%d %b %Y")
@@ -178,7 +204,7 @@ def oled_loop():
                     draw.line([(0, 13), (127, 13)], fill="white")
                     draw.text((8,  16), time_str,    fill="white", font=f_big)
                     draw.line([(0, 38), (127, 38)], fill="white")
-                    draw.text((22, 42), date_str,   fill="white", font=f_sm)
+                    draw.text((22, 42), date_str,    fill="white", font=f_sm)
 
                     slot_str = "  ".join(
                         "X" if _slot_occupied[i] else "O"
@@ -191,24 +217,20 @@ def oled_loop():
         time.sleep(1.0)
 
 # =============================================================================
-# Parking sampler
+# Parking sampler  (reads EMA freq, updates baseline + occupancy)
 # =============================================================================
 
 def parking_sampler():
-    global _current_freq, _baseline_freq, _slot_occupied
+    global _baseline_freq, _slot_occupied
 
     while True:
         time.sleep(FREQ_SAMPLE_S)
 
-        with _pulse_lock:
-            counts = list(_pulse_count)
-            for i in range(PARK_COUNT):
-                _pulse_count[i] = 0
-
         for i in range(PARK_COUNT):
-            freq = counts[i] / FREQ_SAMPLE_S
-            _current_freq[i] = freq
+            with _pulse_lock:
+                freq = _current_freq[i]
 
+            # Initialise baseline on first valid sample
             if _baseline_freq[i] < 0:
                 _baseline_freq[i] = freq
                 print(f"[P{i+1}] Baseline init: {freq:.1f} Hz")
@@ -225,19 +247,22 @@ def parking_sampler():
                     _slot_occupied[i] = False
                     print(f"[P{i+1}] VACANT    "
                           f"(freq={freq:.1f} base={_baseline_freq[i]:.1f} Δ={delta:.1f})")
+                # Snap baseline to new level after a transition
                 _baseline_freq[i] = freq
             else:
+                # Slow drift correction
                 _baseline_freq[i] += BASELINE_ALPHA * delta
 
         with lock:
             system_state["parking"] = list(_slot_occupied)
-            system_state["freq"]    = [round(f, 1) for f in _current_freq]
+            with _pulse_lock:
+                system_state["freq"] = [round(_current_freq[i], 1)
+                                        for i in range(PARK_COUNT)]
 
 # =============================================================================
-# YOLO — ONNX Runtime (no PyTorch required)
+# YOLO — ONNX Runtime
 # =============================================================================
 
-# COCO class names (index = class id)
 _COCO_NAMES = [
     "person","bicycle","car","motorcycle","airplane","bus","train","truck",
     "boat","traffic light","fire hydrant","stop sign","parking meter","bench",
@@ -254,50 +279,38 @@ _COCO_NAMES = [
 
 print("[YOLO] Loading yolov8n.onnx ...")
 _sess_opts = ort.SessionOptions()
-_sess_opts.intra_op_num_threads = 4   # use all 4 RPi4 cores
-_sess_opts.inter_op_num_threads = 2
-_sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+_sess_opts.intra_op_num_threads       = 4
+_sess_opts.inter_op_num_threads       = 2
+_sess_opts.graph_optimization_level   = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 _session = ort.InferenceSession(
     "yolov8n.onnx",
     sess_options=_sess_opts,
     providers=["CPUExecutionProvider"]
 )
 _input_name  = _session.get_inputs()[0].name
-_YOLO_IMGSZ  = YOLO_IMGSZ   # use config value
 _CONF_THRESH = 0.20
 print("[YOLO] ONNX Runtime ready")
 
 
 def _preprocess(bgr: np.ndarray):
-    """Resize + normalise frame to YOLO input tensor [1,3,640,640]."""
-    img = cv2.resize(bgr, (_YOLO_IMGSZ, _YOLO_IMGSZ))
-    img = img[:, :, ::-1]                        # BGR → RGB
-    img = img.astype(np.float32) / 255.0          # 0-255 → 0-1
-    img = np.transpose(img, (2, 0, 1))            # HWC → CHW
-    return np.expand_dims(img, 0)                 # → [1,3,640,640]
+    img = cv2.resize(bgr, (YOLO_IMGSZ, YOLO_IMGSZ))
+    img = img[:, :, ::-1].astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))
+    return np.expand_dims(img, 0)
 
 
 def _postprocess(outputs, orig_h, orig_w):
-    """
-    YOLOv8 ONNX output shape: [1, 84, 8400]
-    84 = 4 (cx,cy,w,h) + 80 class scores
-    Returns list of (x1,y1,x2,y2,conf,cls_id).
-    """
-    preds = outputs[0][0]                         # [84, 8400]
-    preds = preds.T                               # [8400, 84]
+    preds    = outputs[0][0].T                          # [8400, 84]
+    boxes    = preds[:, :4]
+    cls_prob = preds[:, 4:]
+    cls_ids  = np.argmax(cls_prob, axis=1)
+    confs    = cls_prob[np.arange(len(cls_ids)), cls_ids]
 
-    boxes      = preds[:, :4]                     # cx,cy,w,h (normalised to 640)
-    class_prob = preds[:, 4:]                     # [8400, 80]
-    cls_ids    = np.argmax(class_prob, axis=1)
-    confs      = class_prob[np.arange(len(cls_ids)), cls_ids]
-
-    # Filter by confidence and vehicle classes
     mask = (confs >= _CONF_THRESH) & np.isin(cls_ids, VEHICLE_CLASSES)
     boxes, confs, cls_ids = boxes[mask], confs[mask], cls_ids[mask]
 
-    # cx,cy,w,h → x1,y1,x2,y2  (scale back to original resolution)
-    sx = orig_w / _YOLO_IMGSZ
-    sy = orig_h / _YOLO_IMGSZ
+    sx = orig_w / YOLO_IMGSZ
+    sy = orig_h / YOLO_IMGSZ
     x1 = ((boxes[:, 0] - boxes[:, 2] / 2) * sx).astype(int)
     y1 = ((boxes[:, 1] - boxes[:, 3] / 2) * sy).astype(int)
     x2 = ((boxes[:, 0] + boxes[:, 2] / 2) * sx).astype(int)
@@ -315,9 +328,8 @@ def run_cv_pipeline(frame: np.ndarray):
           else cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
     orig_h, orig_w = bgr.shape[:2]
-    tensor   = _preprocess(bgr)
-    outputs  = _session.run(None, {_input_name: tensor})
-    detections = _postprocess(outputs, orig_h, orig_w)
+    outputs        = _session.run(None, {_input_name: _preprocess(bgr)})
+    detections     = _postprocess(outputs, orig_h, orig_w)
 
     vehicle_detected = False
     for (x1, y1, x2, y2, conf, cls_id) in detections:
@@ -335,11 +347,9 @@ def run_cv_pipeline(frame: np.ndarray):
 
 def _gate_fsm_tick(vehicle_detected: bool):
     """
-    State machine called once per camera frame.
-
-    IDLE ──(vehicle ≥ 1 s)──► CONFIRMING ──(confirmed)──► OPEN
-                                                             │
-                                  IDLE ◄──(5 s elapsed)─────┘
+    IDLE ──(vehicle ≥ GATE_CONFIRM_S)──► CONFIRMING ──► OPEN
+                                                          │
+                         IDLE ◄──(GATE_OPEN_S elapsed)───┘
     """
     global _gate_state, _gate_detect_since, _gate_opened_at
 
@@ -387,26 +397,19 @@ def trigger_gate():
     print("[GATE] Manual trigger")
 
 # =============================================================================
-# Camera grabber  (raw frames at full FPS)
-# YOLO runner     (inference at low frequency, decoupled from capture)
+# Camera grabber  (raw frames at full FPS, decoupled from YOLO)
 # =============================================================================
 
-# Latest raw frame shared between camera thread and YOLO thread
-_latest_raw   = None
-_latest_lock  = threading.Lock()
+_latest_raw  = None
+_latest_lock = threading.Lock()
+
 
 def camera_grabber():
-    """
-    Captures frames as fast as possible and writes to both:
-      - _latest_raw  (for YOLO thread to consume)
-      - raw_frame    (for MJPEG stream)
-    YOLO is NOT called here — no blocking inference in the capture loop.
-    """
     global raw_frame, _latest_raw
 
-    picam = Picamera2()
+    picam    = Picamera2()
     frame_us = int(1_000_000 / CAM_FPS)
-    config = picam.create_video_configuration(
+    config   = picam.create_video_configuration(
         main={"size": (CAM_WIDTH, CAM_HEIGHT), "format": "BGR888"},
         controls={"FrameDurationLimits": (frame_us, frame_us)},
     )
@@ -424,27 +427,26 @@ def camera_grabber():
                 if CAM_ROTATE is not None:
                     frame = cv2.rotate(frame, CAM_ROTATE)
                 frame = frame.copy()
-                # Update raw stream immediately (no YOLO delay)
+
                 with lock:
                     raw_frame = frame
                     system_state["cam_online"] = True
                     system_state["last_seen"]  = datetime.now().strftime("%H:%M:%S")
-                # Hand off to YOLO thread
+
                 with _latest_lock:
                     _latest_raw = frame
+
         except Exception as e:
             print(f"[CAM] Error: {e}")
             with lock:
                 system_state["cam_online"] = False
             time.sleep(2.0)
 
+# =============================================================================
+# YOLO runner  (inference at low cadence, drives gate FSM)
+# =============================================================================
 
 def yolo_runner():
-    """
-    Runs YOLO inference at YOLO_INTERVAL_S cadence.
-    Reads the latest raw frame, writes annotated result to processed_frame.
-    Gate FSM is ticked here, not in camera_grabber.
-    """
     global processed_frame
     last_run = 0.0
 
@@ -470,17 +472,18 @@ def yolo_runner():
         except Exception as e:
             print(f"[YOLO] Error: {e}")
 
-
 # =============================================================================
-# MJPEG stream
+# MJPEG stream helpers
 # =============================================================================
 
 def stream_generator(feed: str):
+    """Yields MJPEG frames; feed='raw' or 'processed'."""
     while True:
         with lock:
             f = raw_frame if feed == "raw" else processed_frame
         if f is not None:
-            ok, jpeg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, STREAM_QUALITY])
+            ok, jpeg = cv2.imencode(".jpg", f,
+                                    [cv2.IMWRITE_JPEG_QUALITY, STREAM_QUALITY])
             if ok:
                 yield (
                     b"--frame\r\n"
@@ -496,19 +499,23 @@ def stream_generator(feed: str):
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
 
 @app.route("/video/raw")
 def video_raw():
     return Response(stream_generator("raw"),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
+
 @app.route("/video/processed")
 def video_processed():
     return Response(stream_generator("processed"),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
+
 
 @app.route("/api/status")
 def api_status():
@@ -516,10 +523,12 @@ def api_status():
         state = dict(system_state)
     return jsonify(state)
 
+
 @app.route("/api/gate/<gate_type>")
 def api_gate(gate_type):
     trigger_gate()
     return jsonify({"ok": True})
+
 
 @app.route("/api/parking/<int:slot_id>/<int:state>")
 def api_parking(slot_id, state):
@@ -536,7 +545,7 @@ def api_parking(slot_id, state):
 # =============================================================================
 
 if __name__ == "__main__":
-    # pigpio
+    # --- pigpio ---
     pi = pigpio.pi()
     if not pi.connected:
         print("[pigpio] WARNING: pigpiod not running — GPIO disabled")
@@ -545,12 +554,15 @@ if __name__ == "__main__":
     else:
         print("[pigpio] Connected")
         pi.set_servo_pulsewidth(SERVO_GPIO, SERVO_CLOSE_US)
+
         for idx, gpio in enumerate(PARK_GPIOS):
             pi.set_mode(gpio, pigpio.INPUT)
-            pi.set_pull_up_down(gpio, pigpio.PUD_DOWN)
+            pi.set_pull_up_down(gpio, pigpio.PUD_OFF)   # external pull used
             pi.callback(gpio, pigpio.RISING_EDGE, _make_cb(idx))
+
         print(f"[PARK] Monitoring BCM GPIOs {PARK_GPIOS}")
 
+    # --- Threads ---
     threading.Thread(target=oled_loop,       daemon=True).start()
     threading.Thread(target=parking_sampler, daemon=True).start()
     threading.Thread(target=camera_grabber,  daemon=True).start()
